@@ -121,6 +121,7 @@ class FakePhotoAsset:
         is_live_photo: bool = False,
         adjustment_type: str | None = None,
         edited_size: int | None = None,
+        edited_type: str | None = "public.jpeg",
         timezone_offset: int | None = 19800,  # +05:30, matching an IST device
         location: bytes | None = None,
         favorite: bool = False,
@@ -159,16 +160,17 @@ class FakePhotoAsset:
             asset_fields["locationEnc"] = location
         if favorite:
             asset_fields["isFavorite"] = 1
-        self._asset_record = make_record(asset_id, "CPLAsset", asset_fields)
-
-        master_fields: dict[str, Any] = {}
+        # Current edits (including in-camera Portrait effects) belong to
+        # CPLAsset, not the immutable CPLMaster/original record.
         if edited_size is not None:
-            master_fields["resJPEGFullRes"] = {
+            asset_fields["resJPEGFullRes"] = {
                 "downloadURL": "https://cloudkit.invalid/edited",
                 "size": edited_size,
             }
-            master_fields["resJPEGFullFileType"] = "public.jpeg"
-        self._master_record = make_record(self.master_id, "CPLMaster", master_fields)
+            if edited_type is not None:
+                asset_fields["resJPEGFullFileType"] = edited_type
+        self._asset_record = make_record(asset_id, "CPLAsset", asset_fields)
+        self._master_record = make_record(self.master_id, "CPLMaster", {})
 
     def delete(self) -> bool:
         """Record the deletion attempt and return the configured outcome."""
