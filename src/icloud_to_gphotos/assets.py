@@ -206,6 +206,11 @@ def plan_asset(asset: PhotoAsset, settings: Settings, stem: str) -> PlannedAsset
 
     want_original = not (settings.edited_policy == "edited" and edited_available)
     original = resources.get("original")
+    if want_original and (original is None or not original.url):
+        preservation_errors.append(
+            "Original resource is unavailable; keeping the iCloud asset "
+            "to preserve its original data."
+        )
     if want_original and original is not None and original.url:
         planned.append(
             PlannedResource(

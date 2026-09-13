@@ -269,14 +269,14 @@ class Pipeline:
                 result.errors.append(f"plan failed for {getattr(asset, 'id', '?')}: {exc}")
                 continue
 
-            if not planned.resources:
-                continue
-
-            self._register(planned)
             for error in planned.preservation_errors:
                 LOGGER.warning("%s: %s", planned.asset_id, error)
                 result.errors.append(f"{planned.asset_id}: {error}")
                 result.status = "partial"
+            if not planned.resources:
+                continue
+
+            self._register(planned)
             rows = {row.resource_key: row for row in self.ledger.get_resources(planned.asset_id)}
             outstanding = [
                 res

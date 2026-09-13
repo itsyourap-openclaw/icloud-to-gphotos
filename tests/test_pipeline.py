@@ -251,6 +251,25 @@ def test_original_only_policy_remains_an_explicit_opt_out(make_pipeline, setting
     assert asset.delete_calls == 1
 
 
+@pytest.mark.parametrize("missing_url", [False, True])
+def test_portrait_render_alone_cannot_satisfy_both_policy(make_pipeline, missing_url) -> None:
+    resources = {}
+    if missing_url:
+        resources["original"] = make_resource("original", "IMG_0001.HEIC", url=None)
+    asset = FakePhotoAsset(
+        "portrait", adjustment_type="portrait", edited_size=len(DEFAULT_PAYLOAD),
+        resources=resources,
+    )
+    pipe, *_ = make_pipeline([asset])
+
+    result = pipe.run("missing-original")
+
+    assert result.totals.uploaded == 1  # Preserve the render while waiting.
+    assert asset.delete_calls == 0
+    assert result.status == "partial"
+    assert any("Original resource is unavailable" in error for error in result.errors)
+
+
 def test_failed_portrait_render_blocks_deletion_after_an_old_original_upload(make_pipeline) -> None:
     asset = FakePhotoAsset("portrait", asset_date=days_ago(30))
     gotohp = FakeGotohp(fail={"IMG_0001_edited.HEIC"})
@@ -673,7 +692,7 @@ def test_two_assets_with_the_same_camera_filename_do_not_collide(make_pipeline) 
     assert result.totals.purged_assets == 2
 
 
-def test_asset_with_no_downloadable_resource_is_skipped(make_pipeline) -> None:
+def test_asset_with_no_downloadable_resource_is_reported_as_incomplete(make_pipeline) -> None:
     asset = FakePhotoAsset(
         "a1",
         asset_date=days_ago(30),
@@ -686,7 +705,8 @@ def test_asset_with_no_downloadable_resource_is_skipped(make_pipeline) -> None:
     assert gotohp.calls == []
     assert asset.delete_calls == 0
     assert ledger.get_asset("a1") is None
-    assert result.status == "ok"
+    assert result.status == "partial"
+    assert any("Original resource is unavailable" in error for error in result.errors)
 
 
 def test_report_serialises_to_json(make_pipeline) -> None:

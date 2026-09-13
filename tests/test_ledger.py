@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -176,7 +177,7 @@ def test_legacy_edited_confirmations_are_invalidated_once_on_upgrade(tmp_path):
         _add_resource(ledger, "asset-1", "edited", "IMG_0001_edited.JPG")
         ledger.mark_uploaded("asset-1", "original", "original-key")
         ledger.mark_uploaded("asset-1", "edited", "flat-preview-key")
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
 
     with Ledger(path) as ledger:
