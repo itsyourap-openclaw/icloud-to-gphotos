@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -77,6 +77,7 @@ class PlannedAsset:
     has_adjustments: bool
     is_favorite: bool
     resources: list[PlannedResource]
+    preservation_errors: list[str] = field(default_factory=list)
 
     @property
     def total_bytes(self) -> int:
@@ -186,9 +187,18 @@ def plan_asset(asset: PhotoAsset, settings: Settings, stem: str) -> PlannedAsset
     item_type = asset.item_type
     edited_render = build_edited_resource(asset)
     adjusted = has_adjustments(asset)
-    # An adjustment record without a render is not actionable; treat as unedited
-    # so we never drop the original in "edited"-only mode.
+    # Keep the original as a fallback download, but do not call an adjusted
+    # photo fully preserved (or deletable) when its current render is absent.
     edited_available = adjusted and edited_render is not None and bool(edited_render.url)
+    preservation_errors = []
+    if (
+        item_type != "movie" and adjusted and not edited_available
+        and settings.edited_policy != "original"
+    ):
+        preservation_errors.append(
+            "Current full-size render is unavailable; keeping the iCloud asset "
+            "to preserve its Portrait effect or other edits."
+        )
 
     planned: list[PlannedResource] = []
 
@@ -276,4 +286,5 @@ def plan_asset(asset: PhotoAsset, settings: Settings, stem: str) -> PlannedAsset
         has_adjustments=adjusted,
         is_favorite=_field(asset, "isFavorite") == 1,
         resources=planned,
+        preservation_errors=preservation_errors,
     )
