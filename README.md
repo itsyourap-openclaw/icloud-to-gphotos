@@ -44,6 +44,10 @@ Deletion requires **all three** of these, checked independently:
    still uploading from your phone is never removed.
 3. `I2G_DELETE_FROM_ICLOUD` is on and the run is not a dry run.
 
+When the edited policy requires a current render, an adjusted photo with no
+downloadable render is also held in iCloud and reported as a partial migration.
+Confirming its flat original alone is not sufficient.
+
 The ledger re-checks condition 1 immediately before the delete call, so a crash
 mid-batch can never leave an asset deleted-but-not-uploaded. iCloud deletions
 land in **Recently Deleted for 30 days**, so there is a recovery window even if
@@ -51,7 +55,8 @@ something does go wrong.
 
 ## Metadata handling
 
-iCloud originals are uploaded byte-for-byte, so embedded EXIF survives untouched.
+iCloud originals are downloaded without conversion or pixel re-encoding. Files
+with complete date/GPS metadata are uploaded byte-for-byte.
 The gap is assets whose metadata is *incomplete* — screenshots, imported media,
 and many videos. Google Photos dates those by upload time, which silently
 scrambles a migrated timeline.
@@ -82,12 +87,15 @@ Also handled:
   with a shared filename stem and uploaded in one pass with `--pair-live-photos`,
   so Google Photos reassembles them into a single motion photo. The asset is only
   deletable once *both* components are confirmed.
-- **Edited photos** — an asset adjusted in iCloud has an untouched `resOriginal`
-  and a rendered `resJPEGFull`. pyicloud requests those fields but does not expose
-  the render as a version, so this project builds it. With the default
-  `I2G_EDITED_POLICY=both`, you get the pristine original *and* the edit as you
-  see it today. Renders upload in a separate pass with pairing off, since they
-  share a stem with the still they came from.
+- **Portrait effects and edited photos** — `CPLMaster.resOriginal` is the
+  original, while `CPLAsset.resJPEGFull` contains the current rendering, including
+  applied Portrait blur/lighting, crops and filters. The similarly named master
+  resource is not a substitute for the current render. With the default
+  `I2G_EDITED_POLICY=both`, both original and render are uploaded as separate
+  items. Renders keep their declared JPEG/HEIC/HEIF format and upload in a
+  separate pass with pairing off. Missing required renders prevent iCloud
+  deletion. See [Portrait preservation and limitations](docs/PORTRAIT_PRESERVATION.md),
+  especially the distinction between visible effects and editable depth controls.
 
 Not preserved, because Google Photos has no equivalent this API can reach:
 iCloud album membership, favourites, hidden status, and keywords.

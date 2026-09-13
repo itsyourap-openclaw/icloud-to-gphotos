@@ -269,6 +269,10 @@ class Pipeline:
                 result.errors.append(f"plan failed for {getattr(asset, 'id', '?')}: {exc}")
                 continue
 
+            for error in planned.preservation_errors:
+                LOGGER.warning("%s: %s", planned.asset_id, error)
+                result.errors.append(f"{planned.asset_id}: {error}")
+                result.status = "partial"
             if not planned.resources:
                 continue
 
@@ -290,7 +294,7 @@ class Pipeline:
                 result.totals.already_uploaded += 1
                 if self._purge_allowed(planned, now):
                     batch.ready_to_purge.append(planned)
-                else:
+                elif not planned.preservation_errors:
                     result.totals.skipped_recent += 1
             elif self.ledger.asset_blocked(planned.asset_id):
                 LOGGER.debug("Asset %s is blocked by exhausted retries.", planned.asset_id)
@@ -481,14 +485,17 @@ class Pipeline:
             if self.ledger.asset_ready_to_purge(planned.asset_id):
                 if self._purge_allowed(planned, now):
                     batch.ready_to_purge.append(planned)
-                else:
+                elif not planned.preservation_errors:
                     result.totals.skipped_recent += 1
 
     # --- Deletion -----------------------------------------------------------
 
     def _purge_allowed(self, planned: PlannedAsset, now: datetime) -> bool:
-        """True when the asset satisfies the age grace period."""
-        return planned.age_days(now) >= self.settings.delete_grace_days
+        """Require complete preservation as well as the age grace period."""
+        return (
+            not planned.preservation_errors
+            and planned.age_days(now) >= self.settings.delete_grace_days
+        )
 
     def _purge(self, batch: _Batch, result: RunResult) -> None:
         """Delete verified assets from iCloud, then their local copies."""
@@ -508,6 +515,8 @@ class Pipeline:
             return
 
         for planned in batch.ready_to_purge:
+            if not self._purge_allowed(planned, datetime.now(UTC)):
+                continue
             # Re-check against the ledger rather than trusting the batch list;
             # this is the last gate before an irreversible action.
             if not self.ledger.asset_ready_to_purge(planned.asset_id):

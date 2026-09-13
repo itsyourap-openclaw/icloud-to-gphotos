@@ -15,13 +15,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 ResourceState = Literal["pending", "downloaded", "uploaded", "failed", "purged"]
 
 #: A resource that failed this many upload attempts is reported and left alone
 #: rather than retried forever, so one poison file cannot stall the pipeline.
 MAX_UPLOAD_ATTEMPTS = 5
+
+_RESET_RESOURCE_STATE = """
+UPDATE resources
+   SET state = 'pending', media_key = NULL, error = NULL, attempts = 0,
+       downloaded_at = NULL, uploaded_at = NULL, updated_at = ?
+"""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -142,6 +148,22 @@ class Ledger:
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
+        with self.transaction():
+            version = int(self._conn.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'"
+            ).fetchone()["value"])
+            if version < 2:
+                # Older planners used CPLMaster previews as "edited". Their
+                # confirmations cannot prove a current CPLAsset render was
+                # uploaded, even when sizes match or fingerprints are absent.
+                # Leave already-deleted history alone; recheck retained assets.
+                self._conn.execute(
+                    _RESET_RESOURCE_STATE + " WHERE resource_key = 'edited' AND state != 'purged'",
+                    (_utcnow(),),
+                )
+                self._conn.execute(
+                    "UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
+                )
 
     def close(self) -> None:
         """Close the underlying connection."""
@@ -288,7 +310,19 @@ class Ledger:
         size: int | None,
         checksum: str | None,
     ) -> ResourceRow:
-        """Register a resource as pending, preserving state if already known."""
+        """Preserve progress only while the resource still identifies the same bytes."""
+        previous = self.get_resource(asset_id, resource_key)
+        if previous is not None and (
+            (checksum is not None and checksum != previous.checksum)
+            or (size is not None and previous.size is not None and size != previous.size)
+            or filename != previous.filename
+        ):
+            # Reset before replacing identity fields: a crash must never attach
+            # an old confirmation (or exhausted retries) to a newer render.
+            self._conn.execute(
+                _RESET_RESOURCE_STATE + " WHERE asset_id = ? AND resource_key = ?",
+                (_utcnow(), asset_id, resource_key),
+            )
         self._conn.execute(
             """
             INSERT INTO resources (
@@ -298,8 +332,8 @@ class Ledger:
             ON CONFLICT (asset_id, resource_key) DO UPDATE SET
                 filename     = excluded.filename,
                 staging_root = excluded.staging_root,
-                size         = excluded.size,
-                checksum     = excluded.checksum,
+                size         = COALESCE(excluded.size, resources.size),
+                checksum     = COALESCE(excluded.checksum, resources.checksum),
                 updated_at   = excluded.updated_at
             """,
             (asset_id, resource_key, filename, staging_root, size, checksum, _utcnow()),

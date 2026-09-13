@@ -7,8 +7,10 @@ import plistlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pyicloud.common.cloudkit import CKRecord
 
 from icloud_to_gphotos.assets import (
+    build_edited_resource,
     extract_location,
     has_adjustments,
     local_capture_time,
@@ -75,6 +77,16 @@ def test_movie_plans_only_the_original(settings: Settings) -> None:
     assert _names(planned) == ["IMG_0002.MOV"]
 
 
+def test_movie_poster_does_not_replace_the_original_in_edited_only_mode(settings) -> None:
+    settings.edited_policy = "edited"
+    asset = FakePhotoAsset(
+        "movie", filename="CLIP.MOV", item_type="movie", adjustment_type="trim",
+        edited_size=2048,
+    )
+
+    assert _keys(plan_asset(asset, settings, "CLIP")) == ["original"]
+
+
 def test_edited_photo_with_both_policy_plans_original_and_render(settings: Settings) -> None:
     settings.edited_policy = "both"
     asset = FakePhotoAsset("a1", adjustment_type="crop", edited_size=2048)
@@ -112,11 +124,97 @@ def test_adjustments_without_a_render_still_keep_the_original(settings: Settings
     assert _keys(plan_asset(asset, settings, "IMG_0001")) == ["original"]
 
 
-def test_unedited_photo_never_gets_an_edited_resource(settings: Settings) -> None:
+def test_master_preview_alone_does_not_imply_an_edit(settings: Settings) -> None:
     settings.edited_policy = "both"
     asset = FakePhotoAsset("a1", adjustment_type=None, edited_size=4096)
+    asset._master_record["fields"] = asset._asset_record["fields"]
+    asset._asset_record["fields"] = {}
 
     assert _keys(plan_asset(asset, settings, "IMG_0001")) == ["original"]
+
+
+@pytest.mark.parametrize(
+    ("resource_type", "extension"),
+    [("public.jpeg", ".JPG"), ("public.heic", ".HEIC"), ("public.heif", ".HEIF"), (None, ".JPG")],
+)
+def test_portrait_render_uses_its_own_file_type(settings, resource_type, extension) -> None:
+    asset = FakePhotoAsset(
+        "portrait", adjustment_type="portrait", edited_size=2048, edited_type=resource_type
+    )
+
+    planned = plan_asset(asset, settings, "PORTRAIT")
+
+    assert _keys(planned) == ["original", "edited"]
+    assert planned.resources[1].filename == f"PORTRAIT_edited{extension}"
+    assert planned.resources[1].url == "https://cloudkit.invalid/edited"
+    assert planned.resources[1].size == 2048
+
+
+def test_asset_render_is_preserved_without_an_adjustment_marker(settings) -> None:
+    asset = FakePhotoAsset("portrait", edited_size=2048)
+
+    planned = plan_asset(asset, settings, "PORTRAIT")
+
+    assert _keys(planned) == ["original", "edited"]
+    assert planned.has_adjustments is True
+
+
+def test_asset_render_wins_over_a_master_preview(settings) -> None:
+    asset = FakePhotoAsset("portrait", adjustment_type="portrait", edited_size=2048)
+    asset._master_record["fields"] = {
+        "resJPEGFullRes": {
+            "value": {"downloadURL": "https://cloudkit.invalid/preview", "size": 10}
+        },
+        "resJPEGFullFileType": {"value": "public.heic"},
+        "resJPEGFullFingerprint": {"value": "preview-fingerprint"},
+    }
+    asset._asset_record["fields"]["resJPEGFullFingerprint"] = {"value": "render-fingerprint"}
+
+    render = build_edited_resource(asset)
+
+    assert render.url == "https://cloudkit.invalid/edited"
+    assert render.size == 2048
+    assert render.type == "public.jpeg"
+    assert render.checksum == "render-fingerprint"
+
+
+def test_missing_asset_render_url_does_not_select_a_flat_master_preview(settings) -> None:
+    asset = FakePhotoAsset("portrait", adjustment_type="portrait", edited_size=2048)
+    asset._asset_record["fields"]["resJPEGFullRes"]["value"].pop("downloadURL")
+    asset._master_record["fields"] = {
+        "resJPEGFullRes": {"value": {"downloadURL": "https://cloudkit.invalid/preview", "size": 10}}
+    }
+
+    render = build_edited_resource(asset)
+
+    assert render is not None
+    assert render.url is None
+
+
+def test_master_preview_is_not_a_substitute_for_a_missing_current_render(settings) -> None:
+    asset = FakePhotoAsset("portrait", adjustment_type="portrait", edited_size=2048)
+    for key in list(asset._asset_record["fields"]):
+        if key.startswith("resJPEGFull"):
+            asset._master_record["fields"][key] = asset._asset_record["fields"].pop(key)
+
+    assert build_edited_resource(asset) is None
+    assert _keys(plan_asset(asset, settings, "PORTRAIT")) == ["original"]
+
+
+def test_typed_cloudkit_asset_token_is_supported(settings) -> None:
+    asset = FakePhotoAsset("portrait", adjustment_type="portrait", edited_size=2048)
+    fields = asset._asset_record["fields"]
+    fields["resJPEGFullRes"]["type"] = "ASSETID"
+    fields["resJPEGFullFileType"]["type"] = "STRING"
+    asset._asset_record = CKRecord.model_validate(asset._asset_record)
+    asset._master_record = CKRecord.model_validate(asset._master_record)
+
+    render = build_edited_resource(asset)
+
+    assert render is not None
+    assert render.url == "https://cloudkit.invalid/edited"
+    assert render.size == 2048
+    assert render.filename == "IMG_0001.JPG"
 
 
 def test_alternative_original_is_opt_in(settings: Settings) -> None:

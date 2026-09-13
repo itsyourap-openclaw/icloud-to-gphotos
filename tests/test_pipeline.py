@@ -25,6 +25,8 @@ from .conftest import (
     DEFAULT_PAYLOAD,
     FakeICloudSession,
     FakePhotoAsset,
+    FakeService,
+    FakeSession,
     days_ago,
     make_resource,
 )
@@ -202,6 +204,153 @@ def test_edited_asset_uploads_in_two_unpaired_passes(make_pipeline, settings: Se
     assert by_dir["media"]["pair_live_photos"] is True
     assert by_dir["edited"]["files"] == ["IMG_1_edited.JPG"]
     assert by_dir["edited"]["pair_live_photos"] is False
+    assert result.totals.purged_assets == 1
+
+
+@pytest.mark.parametrize("policy", ["both", "edited"])
+def test_missing_portrait_render_keeps_source_until_it_becomes_available(
+    make_pipeline, settings: Settings, policy: str
+) -> None:
+    settings.edited_policy = policy
+    asset = FakePhotoAsset("portrait", adjustment_type="portrait", asset_date=days_ago(30))
+    pipe, _session, gotohp, ledger = make_pipeline([asset])
+
+    result = pipe.run("missing-render")
+
+    assert result.totals.uploaded == 1  # The original is still backed up.
+    assert asset.delete_calls == 0
+    assert result.status == "partial"
+    assert any("Current full-size render is unavailable" in error for error in result.errors)
+    assert result.totals.skipped_recent == 0  # Not an age-grace skip.
+
+    result = pipe.run("still-missing")
+    assert result.totals.downloaded == 0
+    assert asset.delete_calls == 0  # Even with an already-confirmed original.
+    assert result.status == "partial"
+
+    asset._asset_record["fields"]["resJPEGFullRes"] = {
+        "value": {"downloadURL": "https://cloudkit.invalid/edited", "size": len(DEFAULT_PAYLOAD)}
+    }
+    gotohp.calls.clear()
+    result = pipe.run("render-ready")
+
+    assert gotohp.calls[0]["files"] == ["IMG_0001_edited.JPG"]
+    assert result.totals.downloaded == 1
+    assert result.totals.purged_assets == 1
+    assert ledger.get_resource("portrait", "edited").is_uploaded
+
+
+def test_original_only_policy_remains_an_explicit_opt_out(make_pipeline, settings) -> None:
+    settings.edited_policy = "original"
+    asset = FakePhotoAsset("portrait", adjustment_type="portrait", asset_date=days_ago(30))
+    pipe, *_ = make_pipeline([asset])
+
+    result = pipe.run("original-only")
+
+    assert result.status == "ok"
+    assert asset.delete_calls == 1
+
+
+@pytest.mark.parametrize("missing_url", [False, True])
+def test_portrait_render_alone_cannot_satisfy_both_policy(make_pipeline, missing_url) -> None:
+    resources = {}
+    if missing_url:
+        resources["original"] = make_resource("original", "IMG_0001.HEIC", url=None)
+    asset = FakePhotoAsset(
+        "portrait", adjustment_type="portrait", edited_size=len(DEFAULT_PAYLOAD),
+        resources=resources,
+    )
+    pipe, *_ = make_pipeline([asset])
+
+    result = pipe.run("missing-original")
+
+    assert result.totals.uploaded == 1  # Preserve the render while waiting.
+    assert asset.delete_calls == 0
+    assert result.status == "partial"
+    assert any("Original resource is unavailable" in error for error in result.errors)
+
+
+def test_failed_portrait_render_blocks_deletion_after_an_old_original_upload(make_pipeline) -> None:
+    asset = FakePhotoAsset("portrait", asset_date=days_ago(30))
+    gotohp = FakeGotohp(fail={"IMG_0001_edited.HEIC"})
+    pipe, _session, _gotohp, ledger = make_pipeline([asset], gotohp)
+    # Model a pre-fix run that registered and confirmed only the original.
+    pipe._register(pipe._plan(asset))
+    ledger.mark_uploaded(asset.id, "original", "original-key")
+    asset._asset_record["fields"].update(
+        FakePhotoAsset(
+            "portrait", adjustment_type="portrait", edited_size=len(DEFAULT_PAYLOAD),
+            edited_type="public.heic",
+        )._asset_record["fields"]
+    )
+
+    pipe.run("render-rejected")
+
+    assert asset.delete_calls == 0
+    assert not ledger.asset_ready_to_purge(asset.id)
+    assert gotohp.calls[0]["files"] == ["IMG_0001_edited.HEIC"]
+    assert gotohp.calls[0]["pair_live_photos"] is False
+
+    gotohp.fail.clear()
+    result = pipe.run("render-confirmed")
+
+    assert result.totals.downloaded == 1
+    assert asset.delete_calls == 1
+
+
+def test_changed_portrait_render_is_reuploaded_before_deletion(make_pipeline, settings) -> None:
+    settings.delete_from_icloud = False
+    asset = FakePhotoAsset("portrait", adjustment_type="portrait", edited_size=len(DEFAULT_PAYLOAD))
+    fields = asset._asset_record["fields"]
+    fields["resJPEGFullFingerprint"] = {"value": "render-v1"}
+    pipe, _session, gotohp, ledger = make_pipeline([asset])
+    pipe.run("first-render")
+    assert ledger.asset_ready_to_purge(asset.id)
+
+    # Same filename and size, different depth adjustment. The previous Google
+    # confirmation must not authorize deleting this new version.
+    fields["resJPEGFullFingerprint"] = {"value": "render-v2"}
+    settings.delete_from_icloud = True
+    gotohp.calls.clear()
+    gotohp.fail.add("IMG_0001_edited.JPG")
+    pipe.run("new-render-rejected")
+
+    assert asset.delete_calls == 0
+    assert gotohp.calls[0]["files"] == ["IMG_0001_edited.JPG"]
+    assert not ledger.asset_ready_to_purge(asset.id)
+
+    gotohp.fail.clear()
+    pipe.run("new-render-confirmed")
+    assert asset.delete_calls == 1
+
+
+def test_portrait_original_and_current_render_reach_uploader_without_transcoding(
+    make_pipeline, monkeypatch
+) -> None:
+    # Opaque synthetic payloads: this proves transport byte fidelity, not that
+    # Google will expose Apple depth-editing controls for a real HEIC.
+    original = b"original-container-with-auxiliary-depth-payload"
+    rendered = b"current-portrait-render-with-applied-effect"
+    session = FakeSession({
+        "https://cloudkit.invalid/asset": original,
+        "https://cloudkit.invalid/edited": rendered,
+    })
+    asset = FakePhotoAsset(
+        "portrait", adjustment_type="portrait", edited_size=len(rendered),
+        edited_type="public.heic", service=FakeService(session=session),
+        resources={"original": make_resource("original", "IMG_0001.HEIC", size=len(original))},
+    )
+    pipe, _session, gotohp, _ledger = make_pipeline([asset])
+    received = {}
+
+    def capture(directory, **kwargs):
+        received.update({p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()})
+        return gotohp(directory, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "upload_directory", capture)
+    result = pipe.run("byte-fidelity")
+
+    assert received == {"IMG_0001.HEIC": original, "IMG_0001_edited.HEIC": rendered}
     assert result.totals.purged_assets == 1
 
 
@@ -543,7 +692,7 @@ def test_two_assets_with_the_same_camera_filename_do_not_collide(make_pipeline) 
     assert result.totals.purged_assets == 2
 
 
-def test_asset_with_no_downloadable_resource_is_skipped(make_pipeline) -> None:
+def test_asset_with_no_downloadable_resource_is_reported_as_incomplete(make_pipeline) -> None:
     asset = FakePhotoAsset(
         "a1",
         asset_date=days_ago(30),
@@ -556,7 +705,8 @@ def test_asset_with_no_downloadable_resource_is_skipped(make_pipeline) -> None:
     assert gotohp.calls == []
     assert asset.delete_calls == 0
     assert ledger.get_asset("a1") is None
-    assert result.status == "ok"
+    assert result.status == "partial"
+    assert any("Original resource is unavailable" in error for error in result.errors)
 
 
 def test_report_serialises_to_json(make_pipeline) -> None:
