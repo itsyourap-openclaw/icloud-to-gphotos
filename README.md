@@ -56,6 +56,14 @@ something does go wrong.
 
 ## Metadata handling
 
+The batch byte cap is soft, but disk headroom is a hard download limit. A known
+oversized asset is deferred before downloading; an asset that fits an empty
+batch is carried to the next batch when needed. Unknown-size streams check
+space while writing, share a reservation across workers, and remove incomplete
+files on a capacity failure. Capacity deferrals do not exhaust media retries.
+When ExifTool backfill is active, download admission also reserves space for
+temporary metadata rewrites.
+
 iCloud originals are downloaded without conversion or pixel re-encoding. Files
 with complete date/GPS metadata are uploaded byte-for-byte.
 The gap is assets whose metadata is *incomplete* — screenshots, imported media,

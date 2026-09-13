@@ -88,6 +88,11 @@ class FakeResponse:
 
     body: bytes
     status: int = 200
+    closed: bool = False
+
+    def close(self) -> None:
+        """Record response release (especially after disk-space aborts)."""
+        self.closed = True
 
     def raise_for_status(self) -> None:
         """Raise if the fake response is an error."""

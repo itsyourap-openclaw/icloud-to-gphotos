@@ -844,6 +844,34 @@ def test_resource_larger_than_disk_budget_is_deferred_without_download(make_pipe
     assert ledger.get_resource(asset.id, "original").attempts == 0
 
 
+def test_unknown_size_disk_failure_never_exhausts_media_retries(make_pipeline, monkeypatch):
+    from types import SimpleNamespace
+
+    asset = FakePhotoAsset("unknown-size")
+    asset.resources["original"].size = None
+    pipe, _, _, ledger = make_pipeline([asset])
+    monkeypatch.setattr(pipeline_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=10))
+    for i in range(MAX_UPLOAD_ATTEMPTS + 1):
+        result = pipe.run(f"capacity-{i}")
+        assert result.status == "partial"
+    row = ledger.get_resource(asset.id, "original")
+    assert row.attempts == 0
+    assert row.state == "pending"
+    assert asset.delete_calls == 0
+
+
+def test_disk_reservation_leaves_room_for_metadata_rewrite(make_pipeline, settings, monkeypatch):
+    from types import SimpleNamespace
+
+    asset = FakePhotoAsset("metadata-room")
+    pipe, _, _, _ = make_pipeline([asset])
+    settings.backfill_metadata = True
+    pipe.exiftool = Path("exiftool")
+    monkeypatch.setattr(pipeline_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=25))
+    assert pipe.run("metadata-room").totals.downloaded == 0
+    assert asset._service.session.requested == []
+
+
 def test_disk_admission_defers_to_next_batch_without_losing_asset(make_pipeline, monkeypatch):
     from types import SimpleNamespace
 
