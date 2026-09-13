@@ -266,6 +266,34 @@ def test_partial_live_duplicate_retains_icloud_asset(make_pipeline, monkeypatch)
     assert asset.delete_calls == 0
 
 
+@pytest.mark.parametrize("missing_url", [False, True])
+def test_missing_live_video_blocks_purge_and_is_retried(make_pipeline, missing_url):
+    asset = FakePhotoAsset("missing-motion", is_live_photo=True)
+    video = asset.resources.pop("original_video")
+    if missing_url:
+        asset.resources["original_video"] = make_resource("original_video", "IMG.MOV", url=None)
+    pipe, _, _, ledger = make_pipeline([asset])
+    first = pipe.run("missing-motion")
+    assert first.status == "partial"
+    assert asset.delete_calls == 0
+    assert ledger.get_resource(asset.id, "original").is_uploaded
+
+    asset.resources["original_video"] = video
+    second = pipe.run("motion-available")
+    assert second.totals.downloaded == 1
+    assert second.totals.uploaded == 1
+    assert asset.delete_calls == 1
+
+
+def test_missing_live_video_can_be_explicitly_excluded(make_pipeline, settings):
+    settings.include_live_photo_video = False
+    asset = FakePhotoAsset("still-only", is_live_photo=True)
+    asset.resources.pop("original_video")
+    pipe, _, _, _ = make_pipeline([asset])
+    assert pipe.run("still-only").status == "ok"
+    assert asset.delete_calls == 1
+
+
 def test_edited_asset_uploads_in_two_unpaired_passes(make_pipeline, settings: Settings) -> None:
     """The edited render shares a stem with its still, so it must be uploaded in
     a separate pass with pairing off or gotohp would treat them as a pair."""
