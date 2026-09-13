@@ -160,6 +160,34 @@ def make_pipeline(settings: Settings, tmp_path: Path, monkeypatch: pytest.Monkey
 # --- The happy path --------------------------------------------------------
 
 
+@pytest.mark.parametrize("added", ["recent", "unknown", "naive", "future"])
+def test_old_capture_with_new_or_unknown_import_is_retained(make_pipeline, added):
+    asset = FakePhotoAsset("imported", asset_date=days_ago(3650))
+    asset.added_date = {
+        "recent": days_ago(1), "unknown": None,
+        "naive": days_ago(1).replace(tzinfo=None), "future": days_ago(-1),
+    }[added]
+    pipe, _, _, _ = make_pipeline([asset])
+    result = pipe.run("new-import")
+    assert result.totals.uploaded == 1
+    assert result.totals.skipped_recent == 1
+    assert asset.delete_calls == 0
+
+
+def test_unknown_import_uses_durable_first_seen_for_grace(make_pipeline):
+    from freezegun import freeze_time
+
+    asset = FakePhotoAsset("undated-import")
+    asset.added_date = None
+    pipe, _, _, _ = make_pipeline([asset])
+    with freeze_time("2026-01-01"):
+        assert pipe.run("first-seen").totals.purged_assets == 0
+    with freeze_time("2026-01-07T23:59:59Z"):
+        assert pipe.run("not-yet").totals.purged_assets == 0
+    with freeze_time("2026-01-08"):
+        assert pipe.run("grace-complete").totals.purged_assets == 1
+
+
 def test_dry_run_preserves_existing_staging_and_resource_ledger(make_pipeline, settings):
     old = settings.media_staging_dir / "existing.HEIC"
     old.write_bytes(b"active migration bytes")
