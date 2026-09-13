@@ -208,6 +208,25 @@ def test_mark_asset_purged_cascades_to_resources(ledger: Ledger) -> None:
     assert ledger.asset_ready_to_purge("asset-1") is True
 
 
+def test_legacy_live_confirmations_are_rechecked_once(tmp_path):
+    path = tmp_path / "live.db"
+    with Ledger(path) as ledger:
+        for asset_id in ("live", "deleted"):
+            _add_asset(ledger, asset_id, stem=asset_id)
+            _add_resource(ledger, asset_id, "original", f"{asset_id}.HEIC")
+            ledger.mark_uploaded(asset_id, "original", "unverified-pair")
+        ledger.mark_asset_purged("deleted")
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("UPDATE assets SET is_live_photo = 1")
+            connection.execute("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+    with Ledger(path) as ledger:
+        assert not ledger.asset_ready_to_purge("live")
+        assert ledger.get_resource("deleted", "original").state == "purged"
+        ledger.mark_uploaded("live", "original", "verified")
+    with Ledger(path) as ledger:
+        assert ledger.asset_ready_to_purge("live")
+
+
 def test_purge_failure_is_recorded_without_marking_purged(ledger: Ledger) -> None:
     _add_asset(ledger, "asset-1")
     ledger.mark_asset_purge_failed("asset-1", "network down")
