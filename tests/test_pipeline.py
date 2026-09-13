@@ -294,6 +294,24 @@ def test_missing_live_video_can_be_explicitly_excluded(make_pipeline, settings):
     assert asset.delete_calls == 1
 
 
+@pytest.mark.parametrize("policy", ["both", "edited", "original"])
+def test_adjusted_video_requires_explicit_original_only_policy(make_pipeline, settings, policy):
+    settings.edited_policy = policy
+    asset = FakePhotoAsset(
+        "adjusted-movie", filename="clip.MOV", item_type="movie", adjustment_type="trim",
+    )
+    pipe, _, _, ledger = make_pipeline([asset])
+    result = pipe.run("adjusted-movie")
+    assert result.totals.uploaded == 1
+    assert ledger.get_resource(asset.id, "original").is_uploaded
+    assert asset.delete_calls == (1 if policy == "original" else 0)
+    assert result.status == ("ok" if policy == "original" else "partial")
+    if policy != "original":
+        # A later run must not treat the confirmed original as full preservation.
+        assert pipe.run("adjusted-movie-retry").totals.purged_assets == 0
+        assert asset.delete_calls == 0
+
+
 def test_edited_asset_uploads_in_two_unpaired_passes(make_pipeline, settings: Settings) -> None:
     """The edited render shares a stem with its still, so it must be uploaded in
     a separate pass with pairing off or gotohp would treat them as a pair."""
