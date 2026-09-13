@@ -160,12 +160,13 @@ def make_pipeline(settings: Settings, tmp_path: Path, monkeypatch: pytest.Monkey
 # --- The happy path --------------------------------------------------------
 
 
-@pytest.mark.parametrize("added", ["recent", "unknown", "naive", "future"])
+@pytest.mark.parametrize("added", ["recent", "unknown", "naive", "future", "epoch"])
 def test_old_capture_with_new_or_unknown_import_is_retained(make_pipeline, added):
     asset = FakePhotoAsset("imported", asset_date=days_ago(3650))
     asset.added_date = {
         "recent": days_ago(1), "unknown": None,
         "naive": days_ago(1).replace(tzinfo=None), "future": days_ago(-1),
+        "epoch": datetime.fromtimestamp(0, UTC),
     }[added]
     pipe, _, _, _ = make_pipeline([asset])
     result = pipe.run("new-import")
@@ -730,6 +731,7 @@ def test_second_run_deletes_an_asset_that_aged_past_the_grace_period(
 
         # Time passes: the same asset is now old enough.
         asset.asset_date = days_ago(30)
+        asset.added_date = days_ago(30)
         pipe2, _s2, gotohp2, _l2 = make_pipeline([asset], ledger=ledger)
         result = pipe2.run("run-2")
 

@@ -89,6 +89,20 @@ class PlannedAsset:
         reference = now or datetime.now(UTC)
         return (reference - self.asset_date.astimezone(reference.tzinfo)).days
 
+    def preservation_age_days(self, first_seen: datetime, now: datetime) -> int:
+        """Age since capture and import, using first observation for absent import dates.
+
+        Naive CloudKit dates are interpreted as UTC, never the VM's timezone.
+        A future timestamp stays protected instead of being clamped to zero.
+        """
+        imported = self.added_date
+        # pyicloud substitutes the Unix epoch when addedDate is absent.
+        if imported is None or imported.replace(tzinfo=UTC).timestamp() <= 0:
+            imported = first_seen
+        dates = (self.asset_date, imported)
+        latest = max(d.replace(tzinfo=UTC) if d.tzinfo is None else d for d in dates)
+        return (now - latest).days
+
 
 def sanitize_stem(value: str) -> str:
     """Reduce a filename stem to something safe on both Windows and Linux.
