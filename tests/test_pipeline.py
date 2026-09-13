@@ -160,6 +160,22 @@ def make_pipeline(settings: Settings, tmp_path: Path, monkeypatch: pytest.Monkey
 # --- The happy path --------------------------------------------------------
 
 
+@pytest.mark.parametrize("failure", ["upload", "download", "purge", "plan", "upload-pass"])
+def test_handled_failures_do_not_report_success(make_pipeline, monkeypatch, failure):
+    asset = FakePhotoAsset("failed", delete_result=failure != "purge")
+    gotohp = FakeGotohp(
+        fail={asset.filename} if failure == "upload" else set(),
+        raise_error=failure == "upload-pass",
+    )
+    if failure == "download":
+        asset.resources["original"].size = 999
+    pipe, _, _, _ = make_pipeline([asset], gotohp)
+    if failure == "plan":
+        monkeypatch.setattr(pipe, "_plan", lambda _: 1 / 0)
+    result = pipe.run("handled-failure")
+    assert result.status == "partial"
+
+
 @pytest.mark.parametrize("added", ["recent", "unknown", "naive", "future", "epoch"])
 def test_old_capture_with_new_or_unknown_import_is_retained(make_pipeline, added):
     asset = FakePhotoAsset("imported", asset_date=days_ago(3650))
