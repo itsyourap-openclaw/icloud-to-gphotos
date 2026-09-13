@@ -25,6 +25,8 @@ from .conftest import (
     DEFAULT_PAYLOAD,
     FakeICloudSession,
     FakePhotoAsset,
+    FakeService,
+    FakeSession,
     days_ago,
     make_resource,
 )
@@ -301,6 +303,36 @@ def test_changed_portrait_render_is_reuploaded_before_deletion(make_pipeline, se
     gotohp.fail.clear()
     pipe.run("new-render-confirmed")
     assert asset.delete_calls == 1
+
+
+def test_portrait_original_and_current_render_reach_uploader_without_transcoding(
+    make_pipeline, monkeypatch
+) -> None:
+    # Opaque synthetic payloads: this proves transport byte fidelity, not that
+    # Google will expose Apple depth-editing controls for a real HEIC.
+    original = b"original-container-with-auxiliary-depth-payload"
+    rendered = b"current-portrait-render-with-applied-effect"
+    session = FakeSession({
+        "https://cloudkit.invalid/asset": original,
+        "https://cloudkit.invalid/edited": rendered,
+    })
+    asset = FakePhotoAsset(
+        "portrait", adjustment_type="portrait", edited_size=len(rendered),
+        edited_type="public.heic", service=FakeService(session=session),
+        resources={"original": make_resource("original", "IMG_0001.HEIC", size=len(original))},
+    )
+    pipe, _session, gotohp, _ledger = make_pipeline([asset])
+    received = {}
+
+    def capture(directory, **kwargs):
+        received.update({p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()})
+        return gotohp(directory, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "upload_directory", capture)
+    result = pipe.run("byte-fidelity")
+
+    assert received == {"IMG_0001.HEIC": original, "IMG_0001_edited.HEIC": rendered}
+    assert result.totals.purged_assets == 1
 
 
 def test_remote_duplicate_counts_as_confirmed_and_allows_deletion(make_pipeline) -> None:

@@ -77,6 +77,16 @@ def test_movie_plans_only_the_original(settings: Settings) -> None:
     assert _names(planned) == ["IMG_0002.MOV"]
 
 
+def test_movie_poster_does_not_replace_the_original_in_edited_only_mode(settings) -> None:
+    settings.edited_policy = "edited"
+    asset = FakePhotoAsset(
+        "movie", filename="CLIP.MOV", item_type="movie", adjustment_type="trim",
+        edited_size=2048,
+    )
+
+    assert _keys(plan_asset(asset, settings, "CLIP")) == ["original"]
+
+
 def test_edited_photo_with_both_policy_plans_original_and_render(settings: Settings) -> None:
     settings.edited_policy = "both"
     asset = FakePhotoAsset("a1", adjustment_type="crop", edited_size=2048)

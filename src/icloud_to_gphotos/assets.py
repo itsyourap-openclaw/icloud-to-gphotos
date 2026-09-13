@@ -189,7 +189,9 @@ def plan_asset(asset: PhotoAsset, settings: Settings, stem: str) -> PlannedAsset
     adjusted = has_adjustments(asset)
     # Keep the original as a fallback download, but do not call an adjusted
     # photo fully preserved (or deletable) when its current render is absent.
-    edited_available = adjusted and edited_render is not None and bool(edited_render.url)
+    edited_available = (
+        item_type != "movie" and adjusted and edited_render is not None and bool(edited_render.url)
+    )
     preservation_errors = []
     if (
         item_type != "movie" and adjusted and not edited_available
