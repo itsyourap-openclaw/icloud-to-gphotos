@@ -568,7 +568,7 @@ class Pipeline:
                 )
                 continue
             try:
-                deleted = planned.asset.delete()
+                deleted = self.session.delete_asset(planned.asset)
             except Exception as exc:  # noqa: BLE001 - per-asset failure is recoverable
                 LOGGER.warning("iCloud delete failed for %s: %s", planned.asset_id, exc)
                 self.ledger.mark_asset_purge_failed(planned.asset_id, str(exc))

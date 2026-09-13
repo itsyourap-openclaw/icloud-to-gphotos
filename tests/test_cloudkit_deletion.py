@@ -56,7 +56,7 @@ def test_verified_soft_delete_uses_asset_tag_and_correct_zone(raw):
     operation = request["operations"][0]
     assert operation.operationType == "update"
     assert operation.record.recordChangeTag == "asset-tag"
-    assert operation.record.fields == {"isDeleted": {"type": "INT64", "value": 1}}
+    assert operation.record.model_dump()["fields"] == {"isDeleted": {"type": "INT64", "value": 1}}
 
 
 def test_missing_asset_tag_never_uses_master_tag_or_force_update():

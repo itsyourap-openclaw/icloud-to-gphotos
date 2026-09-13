@@ -160,6 +160,34 @@ def make_pipeline(settings: Settings, tmp_path: Path, monkeypatch: pytest.Monkey
 # --- The happy path --------------------------------------------------------
 
 
+def test_cloudkit_conflict_remains_retryable_in_ledger(make_pipeline, monkeypatch):
+    from types import SimpleNamespace
+
+    from pyicloud.common.cloudkit.models import CKModifyResponse
+
+    from icloud_to_gphotos.icloud_client import ICloudSession
+
+    asset = FakePhotoAsset("cloudkit-conflict")
+    asset._asset_record["recordChangeTag"] = "current-tag"
+    records = [{"recordName": asset.id, "serverErrorCode": "CONFLICT"}]
+    asset._service.private_client = SimpleNamespace(
+        modify=lambda **_: CKModifyResponse.model_validate({"records": records}),
+    )
+    pipe, session, _, ledger = make_pipeline([asset])
+    monkeypatch.setattr(session, "delete_asset", ICloudSession(SimpleNamespace()).delete_asset)
+    result = pipe.run("conflict")
+    assert result.status == "partial"
+    assert result.totals.purge_failures == 1
+    assert ledger.get_asset(asset.id).purged_at is None
+    records[:] = [{
+        "recordName": asset.id, "recordType": "CPLAsset", "fields": {"isDeleted": {"value": 1}},
+    }]
+    second = pipe.run("conflict-resolved")
+    assert second.totals.downloaded == 0
+    assert second.totals.purged_assets == 1
+    assert ledger.get_asset(asset.id).purged_at is not None
+
+
 @pytest.mark.parametrize("failure", ["upload", "download", "purge", "plan", "upload-pass"])
 def test_handled_failures_do_not_report_success(make_pipeline, monkeypatch, failure):
     asset = FakePhotoAsset("failed", delete_result=failure != "purge")
