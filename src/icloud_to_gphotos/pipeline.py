@@ -36,7 +36,7 @@ from .downloader import download_batch, resource_path
 from .icloud_client import ICloudSession
 from .ledger import Ledger
 from .metadata import MetadataReport, backfill_batch, find_exiftool
-from .uploader import UploadError, UploadReport, upload_directory, verify_compatible
+from .uploader import FileVerdict, UploadError, UploadReport, upload_directory, verify_compatible
 
 LOGGER = logging.getLogger(__name__)
 
@@ -444,8 +444,10 @@ class Pipeline:
             return
 
         combined: UploadReport = getattr(self, "_last_upload", UploadReport())
-        confirmed = combined.uploaded_filenames
-        reasons = {v.filename: v for v in combined.verdicts}
+        by_path: dict[str, list[FileVerdict]] = {}
+        for reported in combined.verdicts:
+            if reported.path is not None:
+                by_path.setdefault(reported.path, []).append(reported)
         now = datetime.now(UTC)
 
         with self.ledger.transaction():
@@ -455,16 +457,19 @@ class Pipeline:
                     if row is not None and row.is_uploaded:
                         continue
                     path = resource_path(self._staging, res)
-                    if res.filename in confirmed:
-                        verdict = reasons.get(res.filename)
+                    matches = by_path.get(str(path.resolve()), [])
+                    verdict = matches[0] if len(matches) == 1 else None
+                    if (
+                        row is not None and row.state == "downloaded" and path.is_file()
+                        and verdict is not None and verdict.uploaded
+                    ):
                         self.ledger.mark_uploaded(
                             planned.asset_id,
                             res.key,
-                            verdict.media_key if verdict else None,
+                            verdict.media_key,
                         )
                         result.totals.uploaded += 1
                     elif row is not None and row.state == "downloaded":
-                        verdict = reasons.get(res.filename)
                         reason = (
                             verdict.reason
                             if verdict and verdict.reason

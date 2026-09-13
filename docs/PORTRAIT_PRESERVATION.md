@@ -43,9 +43,12 @@ cannot replace the original container's auxiliary data.
 
 On upgrading a version-1 ledger, legacy `edited` confirmations and exhausted
 retries for retained assets are reset once. They may refer to flat master
-previews, even if filenames and sizes match. Original confirmations and
-historical `purged` rows are left intact. Keep the existing ledger: there is no
-need to clear all migration progress. New fingerprints, changed known sizes or
+previews, even if filenames and sizes match. The subsequent safety migrations
+also reset retained Live Photo confirmations and then all retained upload
+confirmations: older versions stored no path evidence to distinguish a resource
+from a different file with the same basename. These are one-time rechecks;
+historical `purged` rows remain intact. Keep the existing ledger rather than
+clearing migration history. New fingerprints, changed known sizes or
 changed filenames also invalidate a resource's previous confirmation.
 
 ## What this does not prove

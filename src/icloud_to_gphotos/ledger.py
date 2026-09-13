@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 ResourceState = Literal["pending", "downloaded", "uploaded", "failed", "purged"]
 
@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS assets (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_stem ON assets (stem);
+CREATE INDEX IF NOT EXISTS idx_assets_stem_lower ON assets (lower(stem));
+CREATE INDEX IF NOT EXISTS idx_assets_alt_lower ON assets (lower(stem || '_alt'));
+CREATE INDEX IF NOT EXISTS idx_assets_edited_lower ON assets (lower(stem || '_edited'));
 CREATE INDEX IF NOT EXISTS idx_assets_purged ON assets (purged_at);
 
 CREATE TABLE IF NOT EXISTS resources (
@@ -169,6 +172,15 @@ class Ledger:
                     "(SELECT asset_id FROM assets WHERE is_live_photo = 1 AND purged_at IS NULL)",
                     (_utcnow(),),
                 )
+            if version < 4:
+                # Old basename-only matching could credit an unrelated resource.
+                # No path provenance was stored, so retained confirmations must
+                # be re-established once. Preserve deleted history and retries.
+                self._conn.execute(
+                    _RESET_RESOURCE_STATE + " WHERE state = 'uploaded' AND asset_id IN "
+                    "(SELECT asset_id FROM assets WHERE purged_at IS NULL)",
+                    (_utcnow(),),
+                )
             self._conn.execute(
                 "UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
             )
@@ -215,14 +227,23 @@ class Ledger:
             "SELECT stem FROM assets WHERE asset_id = ?", (asset_id,)
         ).fetchone()
         if existing is not None:
-            return str(existing["stem"])
+            preferred = str(existing["stem"])
 
         candidate = preferred
         suffix = 0
         while True:
+            # Reserve the complete rendition stem family, even for resources
+            # not currently available. This prevents future edits/alternatives
+            # from overwriting another asset or pairing with its video. Compare
+            # case-insensitively for Windows and gotohp's filename pairing.
+            family = tuple(
+                s.casefold() for s in (candidate, candidate + "_alt", candidate + "_edited")
+            )
             clash = self._conn.execute(
-                "SELECT asset_id FROM assets WHERE stem = ? AND asset_id != ?",
-                (candidate, asset_id),
+                "SELECT asset_id FROM assets WHERE asset_id != ? AND ("
+                "lower(stem) IN (?, ?, ?) OR lower(stem || '_alt') IN (?, ?, ?) OR "
+                "lower(stem || '_edited') IN (?, ?, ?)) LIMIT 1",
+                (asset_id, *family, *family, *family),
             ).fetchone()
             if clash is None:
                 return candidate
@@ -252,6 +273,7 @@ class Ledger:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (asset_id) DO UPDATE SET
                 filename        = excluded.filename,
+                stem            = excluded.stem,
                 item_type       = excluded.item_type,
                 asset_date      = excluded.asset_date,
                 added_date      = excluded.added_date,

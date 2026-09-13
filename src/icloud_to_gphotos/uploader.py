@@ -56,6 +56,7 @@ class FileVerdict:
     media_key: str | None
     skip_code: str | None
     reason: str | None
+    path: str | None = None
 
 
 @dataclass(slots=True)
@@ -186,6 +187,7 @@ def parse_summary(payload: dict[str, object]) -> UploadReport:
             report.verdicts.append(
                 FileVerdict(
                     filename=Path(path).name,
+                    path=str(Path(path).resolve()),
                     uploaded=uploaded,
                     media_key=media_key,
                     skip_code=skip_code,
