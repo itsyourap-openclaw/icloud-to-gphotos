@@ -222,10 +222,19 @@ def plan_asset(asset: PhotoAsset, settings: Settings, stem: str) -> PlannedAsset
         )
 
     if item_type != "movie":
+        live = resources.get("original_video")
+        if (
+            settings.include_live_photo_video and asset.is_live_photo
+            and (live is None or not live.url)
+        ):
+            preservation_errors.append(
+                "Live Photo video is unavailable; keeping the iCloud asset "
+                "until both still and motion can be preserved."
+            )
         if (
             settings.include_live_photo_video
             and asset.is_live_photo
-            and (live := resources.get("original_video")) is not None
+            and live is not None
             and live.url
         ):
             planned.append(
