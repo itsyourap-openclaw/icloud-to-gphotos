@@ -277,6 +277,32 @@ def test_failed_portrait_render_blocks_deletion_after_an_old_original_upload(mak
     assert asset.delete_calls == 1
 
 
+def test_changed_portrait_render_is_reuploaded_before_deletion(make_pipeline, settings) -> None:
+    settings.delete_from_icloud = False
+    asset = FakePhotoAsset("portrait", adjustment_type="portrait", edited_size=len(DEFAULT_PAYLOAD))
+    fields = asset._asset_record["fields"]
+    fields["resJPEGFullFingerprint"] = {"value": "render-v1"}
+    pipe, _session, gotohp, ledger = make_pipeline([asset])
+    pipe.run("first-render")
+    assert ledger.asset_ready_to_purge(asset.id)
+
+    # Same filename and size, different depth adjustment. The previous Google
+    # confirmation must not authorize deleting this new version.
+    fields["resJPEGFullFingerprint"] = {"value": "render-v2"}
+    settings.delete_from_icloud = True
+    gotohp.calls.clear()
+    gotohp.fail.add("IMG_0001_edited.JPG")
+    pipe.run("new-render-rejected")
+
+    assert asset.delete_calls == 0
+    assert gotohp.calls[0]["files"] == ["IMG_0001_edited.JPG"]
+    assert not ledger.asset_ready_to_purge(asset.id)
+
+    gotohp.fail.clear()
+    pipe.run("new-render-confirmed")
+    assert asset.delete_calls == 1
+
+
 def test_remote_duplicate_counts_as_confirmed_and_allows_deletion(make_pipeline) -> None:
     asset = FakePhotoAsset("a1", filename="IMG_1.HEIC", asset_date=days_ago(30))
     gotohp = FakeGotohp(remote_duplicate={"IMG_1.HEIC"})

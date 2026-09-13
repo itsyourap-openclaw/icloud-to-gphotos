@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -119,6 +120,76 @@ def test_upsert_resource_preserves_uploaded_state(ledger: Ledger) -> None:
     assert row is not None
     assert row.state == "uploaded"
     assert row.media_key == "media-key"
+
+
+@pytest.mark.parametrize(
+    ("checksum", "size", "filename"),
+    [
+        ("new-render", 100, "IMG_0001_edited.JPG"),
+        ("old-render", 101, "IMG_0001_edited.JPG"),
+        ("old-render", 100, "IMG_0001_edited.HEIC"),
+    ],
+)
+@pytest.mark.parametrize("state", ["uploaded", "exhausted"])
+def test_changed_resource_requires_fresh_confirmation(ledger, checksum, size, filename, state):
+    _add_asset(ledger, "asset-1")
+    fields = {"asset_id": "asset-1", "resource_key": "edited", "staging_root": "edited"}
+    ledger.upsert_resource(
+        **fields, checksum="old-render", size=100, filename="IMG_0001_edited.JPG"
+    )
+    for _ in range(MAX_UPLOAD_ATTEMPTS):
+        ledger.mark_failed("asset-1", "edited", "old failure")
+    if state == "uploaded":
+        ledger.mark_uploaded("asset-1", "edited", "old-key")
+
+    row = ledger.upsert_resource(**fields, checksum=checksum, size=size, filename=filename)
+
+    assert row.state == "pending"
+    assert row.media_key is None
+    assert row.error is None
+    assert row.attempts == 0
+    assert not ledger.asset_ready_to_purge("asset-1")
+
+
+def test_missing_identity_fields_do_not_erase_known_fingerprint(ledger):
+    _add_asset(ledger, "asset-1")
+    fields = {
+        "asset_id": "asset-1", "resource_key": "edited", "staging_root": "edited",
+        "filename": "IMG_0001_edited.JPG",
+    }
+    ledger.upsert_resource(**fields, checksum="render", size=100)
+    ledger.mark_uploaded("asset-1", "edited", "key")
+
+    row = ledger.upsert_resource(**fields, checksum=None, size=None)
+
+    assert row.is_uploaded
+    assert row.checksum == "render"
+    assert row.size == 100
+    assert ledger.upsert_resource(**fields, checksum="render", size=100).is_uploaded
+
+
+def test_legacy_edited_confirmations_are_invalidated_once_on_upgrade(tmp_path):
+    path = tmp_path / "legacy.db"
+    with Ledger(path) as ledger:
+        _add_asset(ledger, "asset-1")
+        _add_resource(ledger, "asset-1", "original", "IMG_0001.HEIC")
+        _add_resource(ledger, "asset-1", "edited", "IMG_0001_edited.JPG")
+        ledger.mark_uploaded("asset-1", "original", "original-key")
+        ledger.mark_uploaded("asset-1", "edited", "flat-preview-key")
+        with sqlite3.connect(path) as connection:
+            connection.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+
+    with Ledger(path) as ledger:
+        assert ledger.get_resource("asset-1", "original").is_uploaded
+        render = ledger.get_resource("asset-1", "edited")
+        assert render.state == "pending"
+        assert render.media_key is None
+        assert not ledger.asset_ready_to_purge("asset-1")
+        ledger.mark_uploaded("asset-1", "edited", "current-render-key")
+
+    with Ledger(path) as ledger:
+        assert ledger.asset_ready_to_purge("asset-1")
+        assert ledger.get_resource("asset-1", "edited").media_key == "current-render-key"
 
 
 def test_mark_asset_purged_cascades_to_resources(ledger: Ledger) -> None:
