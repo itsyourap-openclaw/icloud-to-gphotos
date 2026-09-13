@@ -829,6 +829,34 @@ def test_exhausted_retries_block_the_asset_and_are_reported(
 # --- Batching -------------------------------------------------------------
 
 
+def test_resource_larger_than_disk_budget_is_deferred_without_download(make_pipeline, monkeypatch):
+    from types import SimpleNamespace
+
+    asset = FakePhotoAsset("too-large")
+    pipe, _, gotohp, ledger = make_pipeline([asset])
+    monkeypatch.setattr(pipeline_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=10))
+    result = pipe.run("disk-bound")
+    assert result.status == "partial"
+    assert result.totals.downloaded == 0
+    assert asset._service.session.requested == []
+    assert gotohp.calls == []
+    assert asset.delete_calls == 0
+    assert ledger.get_resource(asset.id, "original").attempts == 0
+
+
+def test_disk_admission_defers_to_next_batch_without_losing_asset(make_pipeline, monkeypatch):
+    from types import SimpleNamespace
+
+    assets = [FakePhotoAsset(str(i), filename=f"IMG_{i}.HEIC") for i in range(3)]
+    pipe, _, _, _ = make_pipeline(assets)
+    monkeypatch.setattr(pipeline_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=25))
+    result = pipe.run("disk-batches")
+    assert result.status == "ok"
+    assert result.batches == 3
+    assert result.totals.scanned == 3
+    assert result.totals.purged_assets == 3
+
+
 def test_batching_respects_the_item_cap_and_drains_the_library(
     make_pipeline, settings: Settings
 ) -> None:
