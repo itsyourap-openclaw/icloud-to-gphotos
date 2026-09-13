@@ -155,6 +155,20 @@ def test_run_reports_reauth_with_its_own_exit_code(
     assert "i2g login" in sent[0]["message"]
 
 
+def test_busy_run_stops_before_authentication_or_ledger(wired, monkeypatch):
+    from icloud_to_gphotos.locking import migration_lock
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("busy run touched shared state")
+
+    monkeypatch.setattr(cli_module, "connect", unexpected)
+    monkeypatch.setattr(cli_module, "Ledger", unexpected)
+    with migration_lock(wired):
+        result = runner.invoke(app, ["run", "--dry-run"])
+    assert result.exit_code == EXIT_FAILED
+    assert "Another migration" in result.output
+
+
 def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, result: RunResult) -> None:
     monkeypatch.setattr(cli_module, "connect", lambda _s: object())
 
@@ -162,7 +176,7 @@ def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, result: RunResult) -> None:
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
-        def run(self, _run_id: str) -> RunResult:
+        def _run_locked(self, _run_id: str) -> RunResult:
             return result
 
     monkeypatch.setattr(cli_module, "Pipeline", StubPipeline)
@@ -229,7 +243,7 @@ def test_no_delete_flag_disables_deletion(
             captured["delete"] = settings.delete_from_icloud
             captured["dry_run"] = kwargs.get("dry_run")
 
-        def run(self, _run_id: str) -> RunResult:
+        def _run_locked(self, _run_id: str) -> RunResult:
             return RunResult(run_id="run-x", status="ok")
 
     monkeypatch.setattr(cli_module, "Pipeline", StubPipeline)
@@ -250,7 +264,7 @@ def test_dry_run_flag_reaches_the_pipeline(
         def __init__(self, _settings, *_args, **kwargs) -> None:
             captured["dry_run"] = kwargs.get("dry_run")
 
-        def run(self, _run_id: str) -> RunResult:
+        def _run_locked(self, _run_id: str) -> RunResult:
             return RunResult(run_id="run-x", status="ok", dry_run=True)
 
     monkeypatch.setattr(cli_module, "Pipeline", StubPipeline)
@@ -271,7 +285,7 @@ def test_max_batches_flag_overrides_the_setting(
         def __init__(self, settings, *_args, **_kwargs) -> None:
             captured["max_batches"] = settings.max_batches_per_run
 
-        def run(self, _run_id: str) -> RunResult:
+        def _run_locked(self, _run_id: str) -> RunResult:
             return RunResult(run_id="run-x", status="ok")
 
     monkeypatch.setattr(cli_module, "Pipeline", StubPipeline)

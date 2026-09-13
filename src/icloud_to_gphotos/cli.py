@@ -24,6 +24,7 @@ from .binaries import default_gotohp_config, find_gotohp
 from .config import Settings, load_settings
 from .icloud_client import ReauthRequired, connect, interactive_login, session_health
 from .ledger import Ledger
+from .locking import MigrationBusy, migration_lock
 from .metadata import find_exiftool
 from .pipeline import Pipeline
 from .uploader import UploadError, check_credentials, missing_upload_flags
@@ -262,6 +263,18 @@ def run(
     LOGGER.info("Run %s starting (dry_run=%s)", run_id, dry_run)
 
     try:
+        # Acquire before opening/migrating the ledger or refreshing cookies.
+        with migration_lock(settings):
+            _run_locked(settings, run_id, dry_run, log_file)
+    except MigrationBusy as exc:
+        console.print(f"[bold red]{exc}[/]")
+        raise typer.Exit(EXIT_FAILED) from exc
+
+
+def _run_locked(settings: Settings, run_id: str, dry_run: bool, log_file: Path | None) -> None:
+    """Execute and report a CLI run while holding the migration locks."""
+
+    try:
         session = connect(settings)
     except ReauthRequired as exc:
         LOGGER.error("%s", exc)
@@ -281,7 +294,7 @@ def run(
     with Ledger(settings.ledger_path) as ledger:
         ledger.start_run(run_id)
         pipeline = Pipeline(settings, session, ledger, dry_run=dry_run)
-        result = pipeline.run(run_id)
+        result = pipeline._run_locked(run_id)
         ledger.finish_run(
             run_id,
             status=result.status,

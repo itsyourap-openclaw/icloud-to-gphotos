@@ -189,6 +189,12 @@ class Ledger:
         """Close the underlying connection."""
         self._conn.close()
 
+    def snapshot(self) -> Ledger:
+        """Return an isolated in-memory copy for planning without state changes."""
+        copied = Ledger(Path(":memory:"))
+        self._conn.backup(copied._conn)
+        return copied
+
     def __enter__(self) -> Ledger:
         return self
 
