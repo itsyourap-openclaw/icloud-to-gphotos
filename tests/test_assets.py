@@ -181,13 +181,14 @@ def test_missing_asset_render_url_does_not_select_a_flat_master_preview(settings
     assert render.url is None
 
 
-def test_master_only_render_remains_supported_for_adjusted_records(settings) -> None:
-    asset = FakePhotoAsset("legacy", adjustment_type="crop", edited_size=2048)
+def test_master_preview_is_not_a_substitute_for_a_missing_current_render(settings) -> None:
+    asset = FakePhotoAsset("portrait", adjustment_type="portrait", edited_size=2048)
     for key in list(asset._asset_record["fields"]):
         if key.startswith("resJPEGFull"):
             asset._master_record["fields"][key] = asset._asset_record["fields"].pop(key)
 
-    assert _keys(plan_asset(asset, settings, "LEGACY")) == ["original", "edited"]
+    assert build_edited_resource(asset) is None
+    assert _keys(plan_asset(asset, settings, "PORTRAIT")) == ["original"]
 
 
 def test_typed_cloudkit_asset_token_is_supported(settings) -> None:

@@ -6,9 +6,9 @@ This module decides *which* bytes of an asset we move to Google Photos and
 * Live Photos are two files (still + MOV). gotohp re-pairs them into one Google
   Photos item, but only if both land in the same upload queue with a matching
   Apple content identifier or filename stem — hence the shared stem.
-* An asset edited in iCloud has an untouched ``resOriginal`` and a rendered
-  ``resJPEGFull``. pyicloud requests the ``resJPEGFull*`` fields but does not
-  expose them as a version, so we build that resource here.
+* An asset edited in iCloud (including Portrait effects) has an untouched
+  ``resOriginal`` on CPLMaster and a current ``resJPEGFull`` on CPLAsset.
+  pyicloud's versions only read CPLMaster, so we build the current render here.
 """
 
 from __future__ import annotations
@@ -111,17 +111,30 @@ def _field(asset: PhotoAsset, name: str) -> Any:
 
 
 def has_adjustments(asset: PhotoAsset) -> bool:
-    """True when the asset carries iCloud edit data."""
-    return _field(asset, "adjustmentType") is not None
+    """True when the asset carries edit data or a current full-size render.
+
+    An asset-level render is worth preserving even without an adjustment
+    marker. A master-level JPEG is only an original's preview, not an edit.
+    """
+    return (
+        _field(asset, "adjustmentType") is not None
+        or record_field_value(asset._asset_record, f"{EDITED_PREFIX}Res") is not None
+    )
 
 
 def build_edited_resource(asset: PhotoAsset) -> PhotoResource | None:
-    """Build a resource for the rendered version of an edited photo, if present."""
+    """Read the current render from CPLAsset, never the master's flat preview.
+
+    The upstream helper's ``master_record`` parameter is just the record to
+    read. Keep the token, type, fingerprint and dimensions from the same record.
+    Despite the prefix, a render can be HEIC/HEIF; use its declared file type,
+    defaulting to JPEG only when that field is missing.
+    """
     return build_photo_resource(
         key="edited",
         prefix=EDITED_PREFIX,
-        master_record=asset._master_record,  # noqa: SLF001
-        filename=asset.filename,
+        master_record=asset._asset_record,  # noqa: SLF001
+        filename=str(PurePosixPath(asset.filename).with_suffix(".JPG")),
         item_type_extensions=PhotoAsset.FILE_TYPE_EXTENSIONS,
         is_live_photo=False,
         item_type_lookup=PhotoAsset.ITEM_TYPES,
