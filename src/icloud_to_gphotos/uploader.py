@@ -69,6 +69,7 @@ class UploadReport:
     skipped: int = 0
     verdicts: list[FileVerdict] = field(default_factory=list)
     warnings: list[dict[str, object]] = field(default_factory=list)
+    exit_code: int = 0
 
     def merge(self, other: UploadReport) -> None:
         """Fold another report into this one."""
@@ -78,6 +79,7 @@ class UploadReport:
         self.skipped += other.skipped
         self.verdicts.extend(other.verdicts)
         self.warnings.extend(other.warnings)
+        self.exit_code = self.exit_code or other.exit_code
 
     @property
     def uploaded_filenames(self) -> set[str]:
@@ -88,6 +90,7 @@ class UploadReport:
         """Serialise for the JSON run report."""
         return {
             "total": self.total,
+            "exit_code": self.exit_code,
             "succeeded": self.succeeded,
             "failed": self.failed,
             "skipped": self.skipped,
@@ -269,6 +272,7 @@ def upload_directory(
         )
 
     report = parse_summary(payload)
+    report.exit_code = completed.returncode
     if completed.returncode != 0:
         LOGGER.warning(
             "gotohp exited %s but produced a summary; treating per-file verdicts as authoritative.",

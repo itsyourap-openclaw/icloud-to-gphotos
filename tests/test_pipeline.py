@@ -176,6 +176,24 @@ def test_handled_failures_do_not_report_success(make_pipeline, monkeypatch, fail
     assert result.status == "partial"
 
 
+def test_nonzero_uploader_exit_is_partial_without_discarding_valid_proof(
+    make_pipeline, monkeypatch,
+):
+    stub = FakeGotohp()
+    asset = FakePhotoAsset("exit-failure")
+    pipe, _, _, _ = make_pipeline([asset])
+
+    def upload(directory, **kwargs):
+        report = stub(directory, **kwargs)
+        report.exit_code = 1
+        return report
+
+    monkeypatch.setattr(pipeline_module, "upload_directory", upload)
+    result = pipe.run("exit-failure")
+    assert result.status == "partial"
+    assert result.totals.uploaded == 1
+
+
 @pytest.mark.parametrize("added", ["recent", "unknown", "naive", "future", "epoch"])
 def test_old_capture_with_new_or_unknown_import_is_retained(make_pipeline, added):
     asset = FakePhotoAsset("imported", asset_date=days_ago(3650))

@@ -480,13 +480,17 @@ def test_doctor_shows_where_the_session_is_stored(wired: Settings) -> None:
     assert "someoneexamplecom.cookiejar" in plain
 
 
+@pytest.mark.parametrize("width", [80, 120, 300])
 def test_doctor_says_when_no_session_files_exist(
-    wired: Settings, monkeypatch: pytest.MonkeyPatch
+    wired: Settings, monkeypatch: pytest.MonkeyPatch, width: int
 ) -> None:
+    from rich.console import Console
+
+    monkeypatch.setattr(cli_module, "console", Console(width=width))
     monkeypatch.setattr(
         cli_module, "session_health", lambda _s: {"ok": False, "reason": "no session"}
     )
 
     result = runner.invoke(app, ["doctor"])
 
-    assert "no session files" in " ".join(result.output.split())
+    assert "no session files" in " ".join(result.output.replace("│", " ").split())

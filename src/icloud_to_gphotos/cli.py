@@ -316,7 +316,10 @@ def _run_locked(settings: Settings, run_id: str, dry_run: bool, log_file: Path |
     summary = notify.format_summary(payload)
     console.print(summary)
 
-    failed = result.status in ("error", "interrupted")
+    failed = (
+        result.status != "ok" or bool(result.errors) or bool(result.blocked)
+        or result.totals.failed > 0 or result.totals.purge_failures > 0
+    )
     if failed or result.status == "ok_with_blocked" or result.errors:
         notify.notify(
             settings,
