@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Literal
@@ -52,6 +54,33 @@ class Settings(BaseSettings):
             "trusted session exists it is not read again."
         ),
     )
+
+    # Explicit source selection is opt-in; unconfigured installs retain their ledger.
+    icloud_library: str | None = None
+    include_albums: list[str] = Field(default_factory=list)
+    exclude_albums: list[str] = Field(default_factory=list)
+
+    @field_validator("icloud_library")
+    @classmethod
+    def _library_key(cls, value: str | None) -> str | None:
+        if value is not None and (not value.strip() or value.strip() == "shared"):
+            raise ValueError("Use root or an exact library ID; legacy shared streams unsupported.")
+        return value.strip() if value is not None else None
+
+    @field_validator("include_albums", "exclude_albums")
+    @classmethod
+    def _album_selectors(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() for value in values):
+            raise ValueError("Album selectors cannot be empty.")
+        return list(dict.fromkeys(value.strip() for value in values))
+
+    @model_validator(mode="after")
+    def _source_delete_policy(self) -> Settings:
+        if self.icloud_library not in (None, "root") and self.delete_from_icloud:
+            raise ValueError(
+                "Non-root libraries are backup-only: set I2G_DELETE_FROM_ICLOUD=false."
+            )
+        return self
 
     # --- Paths --------------------------------------------------------------
     state_dir: Path = Field(default_factory=default_state_dir)
@@ -178,6 +207,11 @@ class Settings(BaseSettings):
     @property
     def ledger_path(self) -> Path:
         """SQLite database tracking per-resource migration state."""
+        if self.icloud_library is not None or self.include_albums or self.exclude_albums:
+            scope = hashlib.sha256(json.dumps([
+                self.icloud_username.strip().casefold(), self.icloud_library or "root"
+            ]).encode()).hexdigest()
+            return self.state_dir / "sources" / scope / "ledger.db"
         return self.state_dir / "ledger.db"
 
     @property

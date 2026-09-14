@@ -32,6 +32,7 @@ from pyicloud.services.photos_cloudkit.mappers import (
 )
 
 from .config import Settings
+from .selection import select_assets
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,8 +44,9 @@ class ReauthRequired(RuntimeError):
 class ICloudSession:
     """A connected iCloud session scoped to the primary photo library."""
 
-    def __init__(self, api: PyiCloudService) -> None:
+    def __init__(self, api: PyiCloudService, *, settings: Settings | None = None) -> None:
         self.api = api
+        self.settings = settings
 
     @property
     def photos(self) -> Any:
@@ -61,6 +63,14 @@ class ICloudSession:
         Shared Photo Library removes other participants' copies too.
         """
         libraries = self.photos.libraries
+        if self.settings is not None and (
+            self.settings.icloud_library is not None
+            or self.settings.include_albums or self.settings.exclude_albums
+        ):
+            key = self.settings.icloud_library or "root"
+            if key not in libraries:
+                raise ReauthRequired(f"Selected iCloud library {key!r} is not accessible.")
+            return libraries[key]
         if "root" in libraries:
             return libraries["root"]
         # Defensive: if Apple ever renames the primary key, prefer any private
@@ -77,7 +87,14 @@ class ICloudSession:
         items, so ascending order drains the backlog instead of repeatedly
         revisiting photos that are too recent to delete.
         """
-        return iter(self.library.all.photos)
+        if self.settings is not None and (
+            self.settings.include_albums or self.settings.exclude_albums
+        ):
+            yield from select_assets(
+                self.library, self.settings.include_albums, self.settings.exclude_albums
+            )
+        else:
+            yield from self.library.all.photos
 
     def library_size(self) -> int:
         """Return the number of assets in the main library."""
@@ -90,7 +107,12 @@ class ICloudSession:
         CKErrorItem conflicts. Use its typed client directly, retaining normal
         change-tag concurrency checks and Recently Deleted behavior.
         """
+        if self.settings is not None and self.settings.icloud_library not in (None, "root"):
+            raise RuntimeError("Selected library is backup-only; deletion is prohibited.")
         record = asset._asset_record
+        asset_zone = record_zone(record)
+        if asset_zone and asset_zone.get("zoneName") != PRIMARY_ZONE["zoneName"]:
+            raise RuntimeError("Deletion is restricted to the personal iCloud photo zone.")
         change_tag = record_change_tag(record)
         if not change_tag:
             raise RuntimeError("Cannot safely delete: asset change tag is missing.")
@@ -158,7 +180,7 @@ def connect(settings: Settings) -> ICloudSession:
             "The stored iCloud session is not trusted. Run `i2g login` to refresh it."
         )
     LOGGER.info("Connected to iCloud as %s", settings.icloud_username)
-    return ICloudSession(api)
+    return ICloudSession(api, settings=settings)
 
 
 def interactive_login(
@@ -189,7 +211,7 @@ def interactive_login(
             )
         LOGGER.info("Session trusted; cookies stored in %s", settings.cookie_dir)
 
-    return ICloudSession(api)
+    return ICloudSession(api, settings=settings)
 
 
 def session_health(settings: Settings) -> dict[str, Any]:

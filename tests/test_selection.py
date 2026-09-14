@@ -95,3 +95,34 @@ def test_selected_album_does_not_include_hidden_or_deleted():
     deleted._asset_record['fields']['isDeleted'] = {'value': 1}
     lib = library([], [album('one', 'Album', [visible, hidden, deleted])])
     assert [x.id for x in select_assets(lib, ['one'], [])] == ['visible']
+
+
+def test_discovery_commands_emit_parseable_ids(settings, monkeypatch):
+    import json
+
+    from typer.testing import CliRunner
+
+    from icloud_to_gphotos import cli
+    settings.ensure_dirs()
+    lib = library([], [album('album-id', 'Folder/Trip', [])])
+    lib.scope = 'private'
+    session = SimpleNamespace(library=lib,
+                              photos=SimpleNamespace(libraries={'root': lib}))
+    monkeypatch.setattr(cli, '_settings', lambda: settings)
+    monkeypatch.setattr(cli, 'connect', lambda _: session)
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ['libraries'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)[0]['id'] == 'root'
+    result = runner.invoke(cli.app, ['albums'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)[0]['path'] == 'Folder/Trip'
+
+
+def test_session_applies_selected_album_filter(settings):
+    assets = [FakePhotoAsset('included'), FakePhotoAsset('other')]
+    settings.include_albums = ['album-id']
+    lib = library(assets, [album('album-id', 'Trip', assets[:1])])
+    session = ICloudSession(SimpleNamespace(photos=SimpleNamespace(libraries={'root': lib})),
+                            settings=settings)
+    assert [a.id for a in session.iter_all_assets()] == ['included']
