@@ -390,9 +390,11 @@ class Ledger:
         checksum: str | None,
     ) -> ResourceRow:
         """Preserve progress only while the resource still identifies the same bytes."""
+        checksum = checksum or None
         previous = self.get_resource(asset_id, resource_key)
         if previous is not None and (
-            (checksum is not None and checksum != previous.checksum)
+            (checksum is None and previous.is_uploaded)
+            or (checksum is not None and checksum != previous.checksum)
             or (size is not None and previous.size is not None and size != previous.size)
             or filename != previous.filename
         ):
@@ -412,7 +414,7 @@ class Ledger:
                 filename     = excluded.filename,
                 staging_root = excluded.staging_root,
                 size         = COALESCE(excluded.size, resources.size),
-                checksum     = COALESCE(excluded.checksum, resources.checksum),
+                checksum     = excluded.checksum,
                 updated_at   = excluded.updated_at
             """,
             (asset_id, resource_key, filename, staging_root, size, checksum, _utcnow()),
