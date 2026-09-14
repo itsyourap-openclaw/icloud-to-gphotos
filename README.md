@@ -192,14 +192,20 @@ most:
 ## Development
 
 ```bash
-uv run pytest                 # 273 tests
-uv run ruff check src tests
-uv run mypy
+uv sync --locked --dev
+uv run --no-sync pytest
+uv run --no-sync ruff check src tests
+uv run --no-sync mypy src
 ```
 
 The exiftool integration tests skip themselves when exiftool (or ffmpeg, for the
 video cases) is absent. Install both to run the full suite — they are the only
 tests that prove the tags written are actually accepted and read back correctly.
+
+GitHub Actions runs these checks on pushes and pull requests, including the full
+test suite on Python 3.11, 3.12, and 3.13 with ExifTool and FFmpeg installed.
+See [docs/CI.md](docs/CI.md) for check names, downloadable test/coverage reports,
+and local reproduction commands.
 
 ## Caveats
 
