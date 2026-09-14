@@ -133,6 +133,7 @@ class AssetRow:
     is_live_photo: bool
     has_adjustments: bool
     purged_at: str | None
+    first_seen_at: str
 
 
 class Ledger:
@@ -527,6 +528,7 @@ def _to_asset(row: sqlite3.Row) -> AssetRow:
         is_live_photo=bool(row["is_live_photo"]),
         has_adjustments=bool(row["has_adjustments"]),
         purged_at=row["purged_at"],
+        first_seen_at=row["first_seen_at"],
     )
 
 

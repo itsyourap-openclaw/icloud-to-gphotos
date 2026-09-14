@@ -114,8 +114,8 @@ class Settings(BaseSettings):
         default=7,
         ge=0,
         description=(
-            "Only delete assets at least this old, so items still syncing from a "
-            "device are never removed."
+            "Wait this many days after both capture and import into iCloud. "
+            "When the import date is unavailable, use first observation in the ledger."
         ),
     )
     upload_threads: int = Field(default=3, ge=1, le=16)

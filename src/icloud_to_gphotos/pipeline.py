@@ -9,8 +9,8 @@ conditions, all of which must hold:
 
 1. Every planned resource of the asset is recorded ``uploaded`` in the ledger,
    which only happens when gotohp reported a media key or a remote duplicate.
-2. The asset is at least ``delete_grace_days`` old, so an item still uploading
-   from a phone is never removed.
+2. Capture and import are at least ``delete_grace_days`` old. When iCloud has no
+   import date, first observation in the ledger starts that grace period.
 3. ``delete_from_icloud`` is enabled and the run is not a dry run.
 
 Assets are visited oldest-first. That ordering matters: the grace period
@@ -525,9 +525,13 @@ class Pipeline:
 
     def _purge_allowed(self, planned: PlannedAsset, now: datetime) -> bool:
         """Require complete preservation as well as the age grace period."""
+        recorded = self.ledger.get_asset(planned.asset_id)
+        if recorded is None:
+            return False
         return (
             not planned.preservation_errors
-            and planned.age_days(now) >= self.settings.delete_grace_days
+            and planned.preservation_age_days(datetime.fromisoformat(recorded.first_seen_at), now)
+            >= self.settings.delete_grace_days
         )
 
     def _purge(self, batch: _Batch, result: RunResult) -> None:

@@ -40,7 +40,8 @@ Deletion requires **all three** of these, checked independently:
 
 1. Every resource of the asset is recorded as confirmed by Google Photos —
    gotohp returned a media key, or reported it as an existing remote duplicate.
-2. The asset is at least `I2G_DELETE_GRACE_DAYS` old (default 7), so a photo
+2. Both capture and import into iCloud are at least `I2G_DELETE_GRACE_DAYS`
+   old (default 7); missing import dates use the ledger's first-seen time, so a photo
    still uploading from your phone is never removed.
 3. `I2G_DELETE_FROM_ICLOUD` is on and the run is not a dry run.
 
