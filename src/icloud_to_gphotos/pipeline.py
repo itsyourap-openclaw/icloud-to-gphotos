@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .albums import AlbumSync
 from .assets import PlannedAsset, plan_asset, sanitize_stem
 from .binaries import find_gotohp
 from .config import Settings
@@ -145,6 +146,7 @@ class Pipeline:
             "edited": settings.edited_staging_dir,
         }
         self._last_upload = UploadReport()
+        self._album_sync: AlbumSync | None = None
 
     # --- Public entry point -------------------------------------------------
 
@@ -178,6 +180,7 @@ class Pipeline:
     def _execute(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, dry_run=self.dry_run)
         self._pending_asset: Any = None
+        self._album_sync = None
         started = time.monotonic()
 
         if self.gotohp is None:
@@ -278,6 +281,9 @@ class Pipeline:
             LOGGER.debug("Could not read library size: %s", exc)
 
         result.duration_seconds = time.monotonic() - started
+        if self._album_sync is not None:
+            self._album_sync.close()
+            self._album_sync = None
         return result
 
     # --- Batch collection ---------------------------------------------------
@@ -326,6 +332,11 @@ class Pipeline:
                 if not (row := rows.get(res.key))
                 or (not row.is_uploaded and not row.is_exhausted)
             ]
+            manager = self._album_manager()
+            if manager is not None and manager.pending(planned) and not any(
+                row.is_exhausted for row in rows.values()
+            ):
+                outstanding = list(planned.resources)
 
             if outstanding:
                 required = sum(max(res.size or 0, 0) for res in outstanding)
@@ -396,6 +407,7 @@ class Pipeline:
             self._backfill(batch, result)
             self._upload(result)
             self._verify(batch, result)
+            self._preserve_albums(batch, result)
 
         self._purge(batch, result)
 
@@ -410,7 +422,9 @@ class Pipeline:
             (planned.asset_id, row.resource_key)
             for planned in batch.to_download
             for row in self.ledger.get_resources(planned.asset_id)
-            if row.is_uploaded or row.is_exhausted
+            if row.is_exhausted or (row.is_uploaded and not (
+                self._album_sync is not None and self._album_sync.pending(planned)
+            ))
         )
 
         outcome = download_batch(
@@ -423,8 +437,13 @@ class Pipeline:
         )
         with self.ledger.transaction():
             for item in outcome.files:
-                self.ledger.mark_downloaded(item.asset_id, item.resource_key, item.size)
+                prior = self.ledger.get_resource(item.asset_id, item.resource_key)
+                if prior is None or not prior.is_uploaded:
+                    self.ledger.mark_downloaded(item.asset_id, item.resource_key, item.size)
             for failure in outcome.failures:
+                prior = self.ledger.get_resource(failure.asset_id, failure.resource_key)
+                if prior is not None and prior.is_uploaded:
+                    continue  # Album materialization failure must not erase upload evidence.
                 mark = (
                     self.ledger.mark_deferred if failure.capacity_limited
                     else self.ledger.mark_failed
@@ -552,12 +571,41 @@ class Pipeline:
                 elif not planned.preservation_errors:
                     result.totals.skipped_recent += 1
 
+    def _album_manager(self) -> AlbumSync | None:
+        if self.settings.preserve_albums and not self.dry_run and self._album_sync is None:
+            assert self.gotohp is not None
+            self._album_sync = AlbumSync(
+                self.settings, self.session.library, self.ledger, self.gotohp
+            )
+        return self._album_sync
+
+    def _preserve_albums(self, batch: _Batch, result: RunResult) -> None:
+        manager = self._album_manager()
+        if manager is None:
+            return
+        for planned in batch.to_download:
+            if not self.ledger.asset_ready_to_purge(planned.asset_id):
+                continue
+            try:
+                manager.sync(planned, self._staging)
+            except Exception as exc:
+                result.errors.append(f"albums({planned.asset_id}): {exc}")
+                result.status = "partial"
+                continue
+            if (
+                self._purge_allowed(planned, datetime.now(UTC))
+                and planned not in batch.ready_to_purge
+            ):
+                batch.ready_to_purge.append(planned)
+
     # --- Deletion -----------------------------------------------------------
 
     def _purge_allowed(self, planned: PlannedAsset, now: datetime) -> bool:
         """Require complete preservation as well as the age grace period."""
         recorded = self.ledger.get_asset(planned.asset_id)
         if recorded is None:
+            return False
+        if self._album_sync is not None and self._album_sync.pending(planned):
             return False
         return (
             not planned.preservation_errors

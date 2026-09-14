@@ -103,3 +103,41 @@ def test_mapping_rejects_invalid_or_short_keys(tmp_path):
         for key in ['Trip', 'AUTO', 'AF1QipX']:
             with pytest.raises(ValueError):
                 store.bind('album', key)
+
+
+def test_album_argument_and_summary_at_subprocess_boundary(tmp_path, monkeypatch):
+    import subprocess
+
+    from icloud_to_gphotos import uploader
+    directory = tmp_path / 'media'
+    directory.mkdir()
+    (directory / 'image.jpg').write_bytes(b'media')
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0,
+            stdout='{"album":{"albumKeys":["AF1Qip-album"],"itemsAdded":1}}', stderr='')
+    monkeypatch.setattr(uploader.subprocess, 'run', run)
+    report = uploader.upload_directory(directory, binary=tmp_path / 'gotohp', threads=1,
+                                       pair_live_photos=False, album='AF1Qip-album')
+    assert calls[0][-2:] == ['--album', 'AF1Qip-album']
+    assert report.album['itemsAdded'] == 1
+
+
+def test_bind_command_validates_source_and_persists_mapping(settings, monkeypatch):
+    import json
+
+    from typer.testing import CliRunner
+
+    from icloud_to_gphotos import cli
+    session = SimpleNamespace(library=SimpleNamespace(
+        zone_id={'zoneName': 'PrimarySync'}, albums=[SimpleNamespace(id='source')]))
+    monkeypatch.setattr(cli, '_settings', lambda: settings)
+    monkeypatch.setattr(cli, 'connect', lambda _: session)
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ['bind-album', 'missing', 'AF1Qip-destination'])
+    assert result.exit_code != 0
+    result = runner.invoke(cli.app, ['bind-album', 'source', 'AF1Qip-destination'])
+    assert result.exit_code == 0
+    result = runner.invoke(cli.app, ['album-mappings'])
+    assert json.loads(result.stdout) == [{'album_id': 'source', 'media_key': 'AF1Qip-destination'}]
