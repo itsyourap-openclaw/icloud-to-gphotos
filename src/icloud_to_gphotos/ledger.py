@@ -307,7 +307,15 @@ class Ledger:
         is_live_photo: bool,
         has_adjustments: bool,
     ) -> None:
-        """Record or refresh an asset's immutable-ish descriptive fields."""
+        """Observe a currently present asset, starting fresh after source restoration."""
+        previous = self.get_asset(asset_id)
+        if previous is not None and previous.purged_at is not None:
+            # Seeing this ID again disproves its historical deletion completion.
+            # Reset upload/linkage evidence too, even when its bytes look unchanged.
+            self._conn.execute(
+                _RESET_RESOURCE_STATE + " WHERE asset_id = ?", (_utcnow(), asset_id)
+            )
+            self._conn.execute("DELETE FROM live_photo_pairs WHERE asset_id = ?", (asset_id,))
         self._conn.execute(
             """
             INSERT INTO assets (
@@ -315,6 +323,11 @@ class Ledger:
                 added_date, is_live_photo, has_adjustments, first_seen_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (asset_id) DO UPDATE SET
+                first_seen_at   = CASE WHEN assets.purged_at IS NOT NULL
+                                       THEN excluded.first_seen_at ELSE assets.first_seen_at END,
+                purged_at       = NULL,
+                purge_error     = NULL,
+                master_id       = excluded.master_id,
                 filename        = excluded.filename,
                 stem            = excluded.stem,
                 item_type       = excluded.item_type,
