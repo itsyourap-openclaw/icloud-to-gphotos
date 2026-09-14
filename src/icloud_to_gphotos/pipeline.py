@@ -265,6 +265,11 @@ class Pipeline:
         ]
         if result.blocked and result.status == "ok":
             result.status = "ok_with_blocked"
+        if result.status == "ok" and (
+            result.errors or result.totals.failed or result.totals.purge_failures
+            or any(report.get("failed") or report.get("exit_code") for report in result.uploads)
+        ):
+            result.status = "partial"
 
         try:
             result.library_remaining = self.session.library_size()

@@ -215,6 +215,16 @@ def test_run_exits_nonzero_when_the_pipeline_errors(
     assert sent and sent[0]["priority"] == "high"
 
 
+@pytest.mark.parametrize("status", ["partial", "ok_with_blocked", "interrupted"])
+def test_incomplete_runs_exit_nonzero_and_notify(wired, monkeypatch, status):
+    _stub_pipeline(monkeypatch, RunResult(run_id="incomplete", status=status))
+    sent = []
+    monkeypatch.setattr(cli_module.notify, "notify", lambda _s, **kw: sent.append(kw) or True)
+    result = runner.invoke(app, ["run"])
+    assert result.exit_code == EXIT_FAILED
+    assert sent[0]["priority"] == "high"
+
+
 def test_run_records_the_run_in_the_ledger(
     wired: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -470,13 +480,17 @@ def test_doctor_shows_where_the_session_is_stored(wired: Settings) -> None:
     assert "someoneexamplecom.cookiejar" in plain
 
 
+@pytest.mark.parametrize("width", [80, 120, 300])
 def test_doctor_says_when_no_session_files_exist(
-    wired: Settings, monkeypatch: pytest.MonkeyPatch
+    wired: Settings, monkeypatch: pytest.MonkeyPatch, width: int
 ) -> None:
+    from rich.console import Console
+
+    monkeypatch.setattr(cli_module, "console", Console(width=width))
     monkeypatch.setattr(
         cli_module, "session_health", lambda _s: {"ok": False, "reason": "no session"}
     )
 
     result = runner.invoke(app, ["doctor"])
 
-    assert "no session files" in " ".join(result.output.split())
+    assert "no session files" in " ".join(result.output.replace("│", " ").split())
