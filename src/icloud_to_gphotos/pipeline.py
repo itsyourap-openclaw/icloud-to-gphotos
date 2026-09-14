@@ -143,6 +143,9 @@ class Pipeline:
         self.settings = settings
         self.session = session
         self.ledger = ledger
+        from .archive import MetadataArchive
+
+        self._metadata_archive: MetadataArchive | None = None
         self.dry_run = dry_run
         self.exiftool = find_exiftool(settings.exiftool_binary)
         self.gotohp = find_gotohp(settings.gotohp_binary)
@@ -221,6 +224,7 @@ class Pipeline:
                 "or repaired. See docs/SETUP.md."
             )
 
+        self._metadata_archive = None
         self._clear_staging()
         assets = self._source_assets()
 
@@ -419,9 +423,23 @@ class Pipeline:
         return batch
 
     def _plan(self, asset: Any) -> PlannedAsset:
+        from .archive import MetadataArchive
+
         preferred = sanitize_stem(Path(asset.filename).stem)
         stem = self.ledger.reserve_stem(asset.id, preferred)
-        return plan_asset(asset, self.settings, stem)
+        planned = plan_asset(asset, self.settings, stem)
+        if self.settings.metadata_archive_dir is not None and not self.dry_run:
+            try:
+                if self._metadata_archive is None:
+                    self._metadata_archive = MetadataArchive(
+                        self.settings.metadata_archive_dir,
+                        self.settings.icloud_username,
+                        self.session.library,
+                    )
+                self._metadata_archive.write(planned)
+            except Exception as exc:
+                planned.preservation_errors.append(f"metadata archive failed: {exc}")
+        return planned
 
     def _register(self, planned: PlannedAsset) -> None:
         with self.ledger.transaction():
