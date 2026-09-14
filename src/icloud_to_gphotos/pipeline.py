@@ -30,7 +30,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .archive import MetadataArchive
 from .assets import PlannedAsset, plan_asset, sanitize_stem
 from .binaries import find_gotohp
 from .config import Settings
@@ -138,6 +137,9 @@ class Pipeline:
         self.settings = settings
         self.session = session
         self.ledger = ledger
+        from .archive import MetadataArchive
+
+        self._metadata_archive: MetadataArchive | None = None
         self.dry_run = dry_run
         self.exiftool = find_exiftool(settings.exiftool_binary)
         self.gotohp = find_gotohp(settings.gotohp_binary)
@@ -179,7 +181,6 @@ class Pipeline:
     def _execute(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, dry_run=self.dry_run)
         self._pending_asset: Any = None
-        self._metadata_archive: MetadataArchive | None = None
         started = time.monotonic()
 
         if self.gotohp is None:
@@ -210,6 +211,7 @@ class Pipeline:
                 "or repaired. See docs/SETUP.md."
             )
 
+        self._metadata_archive = None
         self._clear_staging()
         assets = self.session.iter_all_assets()
 
@@ -363,6 +365,8 @@ class Pipeline:
         return batch
 
     def _plan(self, asset: Any) -> PlannedAsset:
+        from .archive import MetadataArchive
+
         preferred = sanitize_stem(Path(asset.filename).stem)
         stem = self.ledger.reserve_stem(asset.id, preferred)
         planned = plan_asset(asset, self.settings, stem)
