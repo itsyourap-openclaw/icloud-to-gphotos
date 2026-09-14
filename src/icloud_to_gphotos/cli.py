@@ -276,6 +276,40 @@ def doctor() -> None:
 
 
 @app.command()
+def libraries() -> None:
+    """List accessible iCloud library IDs and scopes as JSON (no migration)."""
+    _source_inventory(albums=False)
+
+
+@app.command()
+def albums() -> None:
+    """List album IDs and full paths in the selected library as JSON."""
+    _source_inventory(albums=True)
+
+
+def _source_inventory(*, albums: bool) -> None:
+    settings = _settings()
+    try:
+        with migration_lock(settings):
+            session = connect(settings)
+            if albums:
+                rows = [
+                    {"id": album.id, "name": album.name, "path": album.fullname,
+                     "kind": type(album).__name__}
+                    for album in session.library.albums
+                ]
+            else:
+                rows = [
+                    {"id": key, "scope": getattr(library, "scope", "unknown")}
+                    for key, library in session.photos.libraries.items()
+                ]
+    except Exception as exc:
+        console.print(f"Could not list iCloud sources: {exc}", markup=False)
+        raise typer.Exit(EXIT_FAILED) from exc
+    typer.echo(json.dumps(rows, ensure_ascii=False, indent=2))
+
+
+@app.command()
 def run(
     dry_run: Annotated[
         bool,

@@ -705,6 +705,8 @@ class Pipeline:
 
     def _purge_allowed(self, planned: PlannedAsset, now: datetime) -> bool:
         """Require complete preservation as well as the age grace period."""
+        if self.settings.icloud_library not in (None, "root"):
+            return False
         recorded = self.ledger.get_asset(planned.asset_id)
         if recorded is None:
             return False
