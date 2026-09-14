@@ -271,8 +271,14 @@ def plan_asset(asset: PhotoAsset, settings: Settings, stem: str) -> PlannedAsset
                 )
             )
     elif adjusted:
-        # Trimmed/adjusted videos have no separate render we can fetch; the
-        # original is what we move. Surfaced so it shows up in the run report.
+        # Current video adjustments are not materialized by this planner.
+        # Back up the original, but do not claim that trims/effects survived.
+        if settings.edited_policy != "original":
+            preservation_errors.append(
+                "Adjusted video rendering is not supported; keeping the iCloud asset "
+                "to preserve trims or effects. Select original-only policy explicitly "
+                "only if the unedited original is sufficient."
+            )
         LOGGER.info(
             "Video %s (%s) has iCloud adjustments; uploading the unedited original.",
             asset.id,
