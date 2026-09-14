@@ -129,6 +129,21 @@ class Settings(BaseSettings):
     upload_threads: int = Field(default=3, ge=1, le=16)
     download_workers: int = Field(default=4, ge=1, le=16)
     pair_live_photos: bool = Field(default=True)
+    update_existing_photos_to_live: bool = Field(
+        default=False,
+        description="Attach Live Photo motion to an existing Google Photos still (opt-in).",
+    )
+    @model_validator(mode="after")
+    def _validate_live_photo_repair(self) -> Settings:
+        if self.update_existing_photos_to_live and (
+            not self.pair_live_photos or not self.include_live_photo_video
+            or self.edited_policy == "edited"
+        ):
+            raise ValueError(
+                "Live Photo repair requires pairing, motion, and original preservation."
+            )
+        return self
+
     ignore_apple_metadata: bool = Field(
         default=False,
         description=(

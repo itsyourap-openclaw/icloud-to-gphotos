@@ -57,6 +57,7 @@ class FileVerdict:
     skip_code: str | None
     reason: str | None
     path: str | None = None
+    related_paths: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -194,6 +195,7 @@ def parse_summary(payload: dict[str, object]) -> UploadReport:
                 FileVerdict(
                     filename=Path(path).name,
                     path=str(Path(path).resolve()),
+                    related_paths=tuple(str(Path(p).resolve()) for p in paths),
                     uploaded=uploaded,
                     media_key=media_key,
                     skip_code=skip_code,
@@ -214,6 +216,7 @@ def upload_directory(
     binary: Path,
     threads: int,
     pair_live_photos: bool,
+    update_existing_photos_to_live: bool = False,
     ignore_apple_metadata: bool = False,
     config_path: Path | None = None,
     album: str | None = None,
@@ -244,7 +247,10 @@ def upload_directory(
         command.append("--pair-live-photos")
         # Without this, an unpaired component is dropped silently. We would
         # rather upload it standalone than leave it stuck in iCloud forever.
-        command.append("--upload-incomplete-live-photos")
+        if update_existing_photos_to_live:
+            command.append("--update-existing-photos-to-live")
+        else:
+            command.append("--upload-incomplete-live-photos")
         if ignore_apple_metadata:
             command.append("--ignore-apple-metadata")
     if config_path is not None:
@@ -294,7 +300,9 @@ def upload_directory(
     return report
 
 
-def missing_upload_flags(binary: Path, timeout: int = 60) -> list[str]:
+def missing_upload_flags(
+    binary: Path, timeout: int = 60, *, update_existing_photos_to_live: bool = False
+) -> list[str]:
     """Return the required upload flags this binary does not support.
 
     Raises:
@@ -324,16 +332,21 @@ def missing_upload_flags(binary: Path, timeout: int = 60) -> list[str]:
             f"Could not read `gotohp upload --help` (exit {completed.returncode}): "
             f"{help_text.strip()[:300]}"
         )
-    return [flag for flag in REQUIRED_UPLOAD_FLAGS if flag not in help_text]
+    required = REQUIRED_UPLOAD_FLAGS + (
+        ("--update-existing-photos-to-live",) if update_existing_photos_to_live else ()
+    )
+    return [flag for flag in required if flag not in help_text]
 
 
-def verify_compatible(binary: Path) -> None:
+def verify_compatible(binary: Path, *, update_existing_photos_to_live: bool = False) -> None:
     """Raise :class:`IncompatibleGotohp` if the binary cannot be driven headlessly.
 
     Called before any download work, so an unusable binary costs nothing rather
     than being discovered after gigabytes have been fetched.
     """
-    missing = missing_upload_flags(binary)
+    missing = missing_upload_flags(
+        binary, update_existing_photos_to_live=update_existing_photos_to_live
+    )
     if not missing:
         return
     raise IncompatibleGotohp(

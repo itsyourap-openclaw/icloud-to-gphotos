@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS resources (
 
 CREATE INDEX IF NOT EXISTS idx_resources_state ON resources (state);
 
+CREATE TABLE IF NOT EXISTS live_photo_pairs (
+    asset_id TEXT PRIMARY KEY REFERENCES assets(asset_id),
+    signature TEXT NOT NULL,
+    confirmed INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     run_id      TEXT PRIMARY KEY,
     started_at  TEXT NOT NULL,
@@ -215,6 +221,36 @@ class Ledger:
             self._conn.execute("COMMIT")
 
     # --- Assets -------------------------------------------------------------
+
+    def prepare_live_photo_pair(self, asset_id: str, signature: str) -> None:
+        """Invalidate legacy/separate confirmations once per pair fingerprint."""
+        row = self._conn.execute(
+            "SELECT signature FROM live_photo_pairs WHERE asset_id = ?", (asset_id,)
+        ).fetchone()
+        if row is not None and row["signature"] == signature:
+            return
+        self._conn.execute(
+            _RESET_RESOURCE_STATE + " WHERE asset_id = ? AND state != 'purged' "
+            "AND resource_key IN ('original', 'original_video')",
+            (_utcnow(), asset_id),
+        )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO live_photo_pairs VALUES (?, ?, 0)", (asset_id, signature)
+        )
+
+    def confirm_live_photo_pair(self, asset_id: str, signature: str) -> None:
+        """Record a single successful linked-pair verdict."""
+        self._conn.execute(
+            "UPDATE live_photo_pairs SET confirmed = 1 WHERE asset_id = ? AND signature = ?",
+            (asset_id, signature),
+        )
+
+    def live_photo_pair_confirmed(self, asset_id: str, signature: str) -> bool:
+        """Check linkage evidence, independently of individual upload states."""
+        return self._conn.execute(
+            "SELECT 1 FROM live_photo_pairs WHERE asset_id = ? AND signature = ? AND confirmed = 1",
+            (asset_id, signature),
+        ).fetchone() is not None
 
     def get_asset(self, asset_id: str) -> AssetRow | None:
         """Return the recorded asset, or None if it has never been seen."""

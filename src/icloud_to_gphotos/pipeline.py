@@ -20,6 +20,8 @@ instead of re-examining photos that are too recent to touch.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import shutil
 import tempfile
@@ -183,6 +185,7 @@ class Pipeline:
 
     def _execute(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, dry_run=self.dry_run)
+        self._repair_epoch = result.started_at.isoformat()
         self._pending_asset: Any = None
         self._album_sync = None
         started = time.monotonic()
@@ -201,7 +204,10 @@ class Pipeline:
         # and leaving every file recorded as failed.
         if not self.dry_run:
             try:
-                verify_compatible(self.gotohp)
+                if self.settings.update_existing_photos_to_live:
+                    verify_compatible(self.gotohp, update_existing_photos_to_live=True)
+                else:
+                    verify_compatible(self.gotohp)
             except UploadError as exc:
                 result.status = "error"
                 result.errors.append(str(exc))
@@ -439,6 +445,8 @@ class Pipeline:
                     size=res.size,
                     checksum=res.resource.checksum,
                 )
+            if self.settings.update_existing_photos_to_live and planned.is_live_photo:
+                self.ledger.prepare_live_photo_pair(planned.asset_id, self._pair_signature(planned))
 
     # --- Batch processing ---------------------------------------------------
 
@@ -545,6 +553,9 @@ class Pipeline:
                     binary=self.gotohp,  # type: ignore[arg-type]
                     threads=self.settings.upload_threads,
                     pair_live_photos=pair,
+                    update_existing_photos_to_live=(
+                        pair and self.settings.update_existing_photos_to_live
+                    ),
                     ignore_apple_metadata=self.settings.ignore_apple_metadata,
                     config_path=self.settings.gotohp_config,
                 )
@@ -571,6 +582,23 @@ class Pipeline:
 
         with self.ledger.transaction():
             for planned in batch.to_download:
+                repair = self.settings.update_existing_photos_to_live and planned.is_live_photo
+                pair_paths = {
+                    str(resource_path(self._staging, res).resolve())
+                    for res in planned.resources if res.key in ("original", "original_video")
+                }
+                pair_verdicts = [by_path.get(path, []) for path in pair_paths]
+                linked = (
+                    len(pair_paths) == 2
+                    and all(Path(path).is_file() for path in pair_paths)
+                    and all(len(matches) == 1 for matches in pair_verdicts)
+                    and all(
+                        matches[0].uploaded and matches[0].media_key
+                        and set(matches[0].related_paths) == pair_paths
+                        for matches in pair_verdicts
+                    )
+                    and len({matches[0].media_key for matches in pair_verdicts}) == 1
+                )
                 for res in planned.resources:
                     row = self.ledger.get_resource(planned.asset_id, res.key)
                     if row is not None and row.is_uploaded:
@@ -578,6 +606,10 @@ class Pipeline:
                     path = resource_path(self._staging, res)
                     matches = by_path.get(str(path.resolve()), [])
                     verdict = matches[0] if len(matches) == 1 else None
+                    if (
+                        repair and res.key in ("original", "original_video") and not linked
+                    ):
+                        verdict = None
                     if (
                         row is not None and row.state == "downloaded" and path.is_file()
                         and verdict is not None and verdict.uploaded
@@ -604,6 +636,10 @@ class Pipeline:
                     elif not path.exists() and row is not None and row.state == "failed":
                         # Download already failed; nothing further to record.
                         pass
+                if repair and linked:
+                    self.ledger.confirm_live_photo_pair(
+                        planned.asset_id, self._pair_signature(planned)
+                    )
 
         for planned in batch.to_download:
             if self.ledger.asset_ready_to_purge(planned.asset_id):
@@ -641,10 +677,25 @@ class Pipeline:
 
     # --- Deletion -----------------------------------------------------------
 
+    def _pair_signature(self, planned: PlannedAsset) -> str:
+        pair = [r for r in planned.resources if r.key in ("original", "original_video")]
+        fingerprint = [(r.key, r.resource.checksum, r.size) for r in pair]
+        # Without content fingerprints, do not reuse a previous run's linkage proof.
+        fingerprinted = len(pair) == 2 and all(r.resource.checksum for r in pair)
+        epoch = "" if fingerprinted else self._repair_epoch
+        return hashlib.sha256(json.dumps([fingerprint, epoch]).encode()).hexdigest()
+
     def _purge_allowed(self, planned: PlannedAsset, now: datetime) -> bool:
         """Require complete preservation as well as the age grace period."""
         recorded = self.ledger.get_asset(planned.asset_id)
         if recorded is None:
+            return False
+        if (
+            self.settings.update_existing_photos_to_live and planned.is_live_photo
+            and not self.ledger.live_photo_pair_confirmed(
+                planned.asset_id, self._pair_signature(planned)
+            )
+        ):
             return False
         return (
             (self._album_sync is None or not self._album_sync.pending(planned))
