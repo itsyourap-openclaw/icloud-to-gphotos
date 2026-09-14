@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     )
 
     # --- Batching -----------------------------------------------------------
+    incremental_scan: bool = Field(
+        default=False, description="Use a CloudKit cursor and durable queue between full scans."
+    )
+    full_scan_interval_hours: int = Field(default=168, gt=0)
+
     batch_max_bytes: int = Field(
         default=20 * GiB,
         gt=0,

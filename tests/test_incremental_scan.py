@@ -42,6 +42,7 @@ class DeltaLibrary:
 def enable(pipe, session):
     pipe.settings.incremental_scan = True
     session.library = DeltaLibrary(session)
+    session.get_asset_by_id = session.library.get
     return session.library
 
 
@@ -159,3 +160,115 @@ def test_dry_run_never_writes_scan_state(make_pipeline):
     pipe.run("preview")
     assert not scan_state_path(pipe.settings, library).exists()
     assert library.change_calls == []
+
+
+def test_hydration_uses_two_bounded_typed_lookups_without_listing():
+    from pyicloud.common.cloudkit.models import CKLookupResponse
+
+    from icloud_to_gphotos.icloud_client import ICloudSession
+
+    calls = []
+    responses = [
+        {
+            "records": [
+                {
+                    "recordName": "asset",
+                    "recordType": "CPLAsset",
+                    "fields": {
+                        "masterRef": {
+                            "type": "REFERENCE",
+                            "value": {"recordName": "master", "action": "NONE"},
+                        }
+                    },
+                }
+            ]
+        },
+        {"records": [{"recordName": "master", "recordType": "CPLMaster", "fields": {}}]},
+    ]
+
+    def lookup(**kwargs):
+        calls.append(kwargs["record_names"])
+        return CKLookupResponse.model_validate(responses.pop(0))
+
+    library = SimpleNamespace(
+        zone_id={"zoneName": "PrimarySync"},
+        service=SimpleNamespace(),
+        _client=SimpleNamespace(lookup=lookup),
+    )
+    session = ICloudSession(SimpleNamespace(photos=SimpleNamespace(libraries={"root": library})))
+    asset = session.get_asset_by_id("asset")
+    assert asset.id == "asset" and asset.master_id == "master"
+    assert calls == [["asset"], ["master"]]
+
+
+def test_incomplete_master_is_deferred_without_full_scan():
+    from pyicloud.common.cloudkit.models import CKLookupResponse
+
+    from icloud_to_gphotos.icloud_client import ICloudSession
+
+    library = SimpleNamespace(
+        zone_id={"zoneName": "PrimarySync"},
+        _client=SimpleNamespace(
+            lookup=lambda **kwargs: CKLookupResponse.model_validate(
+                {"records": [{"recordName": "asset", "recordType": "CPLAsset", "fields": {}}]}
+            )
+        ),
+    )
+    session = ICloudSession(SimpleNamespace(photos=SimpleNamespace(libraries={"root": library})))
+    assert session.get_asset_by_id("asset") is None
+
+
+def test_full_checkpoint_is_captured_before_listing(make_pipeline):
+    from icloud_to_gphotos.scan import ScanStore, scan_state_path
+
+    pipe, session, _, _ = make_pipeline([])
+    library = enable(pipe, session)
+
+    def listing():
+        library.current_sync_token = "changed-during-listing"
+        return iter([])
+
+    session.iter_all_assets = listing
+    pipe.run("concurrent-source-change")
+    with ScanStore(scan_state_path(pipe.settings, library)) as store:
+        assert store.cursor == "initial"
+
+
+def test_known_master_change_requeues_its_asset(make_pipeline):
+    asset = FakePhotoAsset("known-master")
+    pipe, session, _, _ = make_pipeline([asset])
+    pipe.settings.delete_from_icloud = False
+    library = enable(pipe, session)
+    pipe.run("initial")
+    library.events = [event(asset.master_id, "CPLMaster")]
+    pipe.run("master")
+    assert session.iterations == 1
+    assert library.lookup_calls == [asset.id]
+
+
+def test_album_filters_never_use_unfiltered_delta_lookup(make_pipeline):
+    pipe, session, _, _ = make_pipeline([])
+    library = enable(pipe, session)
+    # Models from the independent selection branch add this field.
+    pipe.settings.__dict__["include_albums"] = ["selected-album"]
+    pipe.run("filtered-first")
+    pipe.run("filtered-next")
+    assert session.iterations == 2 and library.change_calls == []
+
+
+def test_periodic_full_reconciles_absent_ids_without_claiming_backup(make_pipeline):
+    from icloud_to_gphotos.scan import ScanStore, scan_state_path
+
+    with freeze_time("2030-01-01"):
+        pipe, session, _, ledger = make_pipeline([])
+        library = enable(pipe, session)
+        pipe.settings.full_scan_interval_hours = 1
+        pipe.run("initial")
+        library.events = [event("absent")]
+        assert pipe.run("deferred").scan["pending"] == 1
+    with freeze_time("2030-01-02"):
+        assert pipe.run("periodic").scan["pending"] == 0
+    assert session.iterations == 2
+    assert ledger.get_asset("absent") is None
+    with ScanStore(scan_state_path(pipe.settings, library)) as store:
+        assert store.last_full is not None

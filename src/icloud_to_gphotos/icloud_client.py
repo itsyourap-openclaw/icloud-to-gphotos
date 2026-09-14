@@ -30,6 +30,7 @@ from pyicloud.services.photos_cloudkit.mappers import (
     record_record_type,
     record_zone,
 )
+from pyicloud.services.photos_cloudkit.service import PhotoAsset
 
 from .config import Settings
 
@@ -38,6 +39,10 @@ LOGGER = logging.getLogger(__name__)
 
 class ReauthRequired(RuntimeError):
     """Raised when the stored iCloud session can no longer be used unattended."""
+
+
+class SourceAssetInvisible(RuntimeError):
+    """An explicitly deleted/hidden source record must not be migrated."""
 
 
 class ICloudSession:
@@ -82,6 +87,45 @@ class ICloudSession:
     def library_size(self) -> int:
         """Return the number of assets in the main library."""
         return len(self.library.all)
+
+    def get_asset_by_id(self, asset_id: str) -> PhotoAsset | None:
+        """Hydrate one asset in at most two lookups, with no implicit full scan."""
+        library = self.library
+
+        def lookup(name: str, kind: str) -> CKRecord | None:
+            response = library._client.lookup(
+                record_names=[name], zone_id=CKZoneIDReq(**library.zone_id)
+            )
+            if len(response.records) != 1:
+                raise RuntimeError("CloudKit lookup did not return exactly one record.")
+            record = response.records[0]
+            if isinstance(record, CKErrorItem) and record.serverErrorCode == "UNKNOWN_ITEM":
+                return None
+            if not isinstance(record, CKRecord) or record.recordName != name:
+                raise RuntimeError("CloudKit lookup failed or returned a mismatched record.")
+            zone = record_zone(record)
+            if record.recordType != kind or (
+                zone and zone.get("zoneName") != library.zone_id.get("zoneName")
+            ):
+                raise RuntimeError("CloudKit lookup returned the wrong record type or zone.")
+            return record
+
+        record = lookup(asset_id, "CPLAsset")
+        if record is None:
+            return None
+        if record.deleted or any(
+            record_field_value(record, flag) for flag in ("isDeleted", "isHidden")
+        ):
+            raise SourceAssetInvisible("The source asset is hidden or deleted.")
+        reference = record_field_value(record, "masterRef")
+        master_id = (reference.get("recordName") if isinstance(reference, dict)
+                     else getattr(reference, "recordName", None))
+        if not master_id:
+            return None
+        master = lookup(master_id, "CPLMaster")
+        if master is None:
+            return None
+        return PhotoAsset(library.service, master, record, library=library)
 
     def delete_asset(self, asset: Any) -> bool:
         """Soft-delete only on a matching per-record CloudKit acknowledgement.
