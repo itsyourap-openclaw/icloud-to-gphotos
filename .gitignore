@@ -21,6 +21,7 @@ build/
 .coverage.*
 htmlcov/
 coverage.xml
+/test-results/
 
 # Runtime state, if someone points state_dir at the checkout
 state/
