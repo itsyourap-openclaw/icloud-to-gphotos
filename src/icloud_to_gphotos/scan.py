@@ -127,6 +127,10 @@ class ChangeScanner:
         self.events = 0
         self.lookup_failures = 0
 
+    def require_full_scan(self) -> None:
+        """Invalidate discovery, not queued work, when upload provenance changes."""
+        self.store.db.execute("UPDATE checkpoint SET cursor=NULL")
+
     def _full(self) -> Iterator[Any]:
         self.mode = "full"
         # Capture BEFORE listing: changes arriving during traversal must be replayed.

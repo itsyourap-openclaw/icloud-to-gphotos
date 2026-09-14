@@ -22,6 +22,7 @@ from rich.table import Table
 from . import logging_setup, notify
 from .binaries import default_gotohp_config, find_gotohp
 from .config import Settings, load_settings
+from .destination import DestinationGuard
 from .icloud_client import ReauthRequired, connect, interactive_login, session_health
 from .ledger import Ledger
 from .locking import MigrationBusy, migration_lock
@@ -64,7 +65,11 @@ def album_mappings() -> None:
     try:
         with migration_lock(settings):
             session = connect(settings)
-            path = album_state_path(settings, session.library)
+            binary = find_gotohp(settings.gotohp_binary)
+            if binary is None:
+                raise UploadError("gotohp CLI not found")
+            guard = DestinationGuard(binary, settings.gotohp_config)
+            path = album_state_path(settings, session.library, guard.identity)
             if not path.exists():
                 typer.echo("[]")
                 return
@@ -86,7 +91,11 @@ def bind_album(source_album_id: str, destination_album_key: str) -> None:
             session = connect(settings)
             if not any(str(album.id) == source_album_id for album in session.library.albums):
                 raise ValueError("Source album ID is not in the selected iCloud library.")
-            with AlbumStore(album_state_path(settings, session.library)) as store:
+            binary = find_gotohp(settings.gotohp_binary)
+            if binary is None:
+                raise UploadError("gotohp CLI not found")
+            guard = DestinationGuard(binary, settings.gotohp_config)
+            with AlbumStore(album_state_path(settings, session.library, guard.identity)) as store:
                 store.bind(source_album_id, destination_album_key)
     except Exception as exc:
         console.print(f"Could not bind album: {exc}", markup=False)

@@ -143,12 +143,19 @@ def make_pipeline(settings: Settings, tmp_path: Path, monkeypatch: pytest.Monkey
         # compatibility gate override this again.
         monkeypatch.setattr(pipeline_module, "verify_compatible", lambda _b: None)
 
+        from types import SimpleNamespace
+
+        from icloud_to_gphotos.destination import account_identity
+        identity = account_identity('a@example.invalid', None)
+        monkeypatch.setattr(pipeline_module.destination_integration, "DestinationGuard",
+                            lambda *a, **kw: SimpleNamespace(identity=identity, check=lambda: None))
         session = FakeICloudSession(assets)
         if ledger is None:
             state = Ledger(settings.ledger_path)
             opened.append(state)
         else:
             state = ledger
+        state.bind_destination(identity)
         return Pipeline(settings, session, state, dry_run=dry_run), session, stub, state
 
     yield build

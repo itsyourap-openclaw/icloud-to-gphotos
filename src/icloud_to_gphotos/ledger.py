@@ -152,6 +152,10 @@ class AssetRow:
     first_seen_at: str
 
 
+class DestinationMismatch(RuntimeError):
+    """A ledger must never credit a different destination's uploaded resources."""
+
+
 class Ledger:
     """Thin, explicit SQLite wrapper. One instance per process."""
 
@@ -201,6 +205,39 @@ class Ledger:
             self._conn.execute(
                 "UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
             )
+
+    def destination_identity(self) -> str | None:
+        """Return the opaque identity associated with this ledger's upload evidence."""
+        row = self._conn.execute("SELECT value FROM meta WHERE key='destination_id'").fetchone()
+        return str(row["value"]) if row else None
+
+    def bind_destination(self, identity: str) -> bool:
+        """Bind once; invalidate unscoped retained evidence and require complete discovery."""
+        with self.transaction():
+            previous = self.destination_identity()
+            if previous is not None and previous != identity:
+                raise DestinationMismatch(
+                    "Destination does not match this ledger. Restore the original gotohp "
+                    "account/configuration or use a separate I2G_STATE_DIR for the new destination."
+                )
+            if previous is None:
+                self._conn.execute(
+                    _RESET_RESOURCE_STATE + " WHERE state='uploaded' AND asset_id IN "
+                    "(SELECT asset_id FROM assets WHERE purged_at IS NULL)", (_utcnow(),)
+                )
+                self._conn.execute("UPDATE live_photo_pairs SET confirmed=0 WHERE asset_id IN "
+                                   "(SELECT asset_id FROM assets WHERE purged_at IS NULL)")
+                self._conn.execute("INSERT INTO meta VALUES ('destination_id', ?)", (identity,))
+                self._conn.execute("INSERT OR REPLACE INTO meta VALUES "
+                                   "('destination_reconcile', '1')")
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key='destination_reconcile'"
+            ).fetchone()
+            return row is not None and row["value"] == '1'
+
+    def finish_destination_reconciliation(self) -> None:
+        """Only complete source discovery may settle the one-time upgrade check."""
+        self._conn.execute("UPDATE meta SET value='0' WHERE key='destination_reconcile'")
 
     def close(self) -> None:
         """Close the underlying connection."""
