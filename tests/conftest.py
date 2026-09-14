@@ -196,6 +196,10 @@ class FakeICloudSession:
         """Count assets still present."""
         return len([a for a in self._assets if a.delete_calls == 0])
 
+    def delete_asset(self, asset: FakePhotoAsset) -> bool:
+        """Simulate the verified deletion adapter's success/failure result."""
+        return asset.delete()
+
 
 @pytest.fixture(autouse=True)
 def _instant_retries() -> Any:

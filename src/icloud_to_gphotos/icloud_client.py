@@ -13,7 +13,23 @@ from collections.abc import Iterator
 from typing import Any
 
 from pyicloud.base import PyiCloudService
+from pyicloud.common.cloudkit import (
+    CKErrorItem,
+    CKModifyOperation,
+    CKRecord,
+    CKWriteRecord,
+    CKZoneID,
+    CKZoneIDReq,
+)
 from pyicloud.exceptions import PyiCloudFailedLoginException
+from pyicloud.services.photos_cloudkit.constants import PRIMARY_ZONE
+from pyicloud.services.photos_cloudkit.mappers import (
+    record_change_tag,
+    record_field_value,
+    record_name,
+    record_record_type,
+    record_zone,
+)
 
 from .config import Settings
 
@@ -66,6 +82,48 @@ class ICloudSession:
     def library_size(self) -> int:
         """Return the number of assets in the main library."""
         return len(self.library.all)
+
+    def delete_asset(self, asset: Any) -> bool:
+        """Soft-delete only on a matching per-record CloudKit acknowledgement.
+
+        pyicloud 2.7 PhotoAsset.delete() discards the modify response, including
+        CKErrorItem conflicts. Use its typed client directly, retaining normal
+        change-tag concurrency checks and Recently Deleted behavior.
+        """
+        record = asset._asset_record
+        change_tag = record_change_tag(record)
+        if not change_tag:
+            raise RuntimeError("Cannot safely delete: asset change tag is missing.")
+        name = record_name(record)
+        zone = record_zone(record) or PRIMARY_ZONE
+        response = asset._service.private_client.modify(
+            operations=[CKModifyOperation(
+                operationType="update",
+                record=CKWriteRecord(
+                    recordName=name,
+                    recordType=record_record_type(record),
+                    recordChangeTag=change_tag,
+                    fields={"isDeleted": {"type": "INT64", "value": 1}},
+                    zoneID=CKZoneID(**zone),
+                ),
+            )],
+            zone_id=CKZoneIDReq(**zone),
+            atomic=True,
+        )
+        if len(response.records) != 1:
+            raise RuntimeError("CloudKit did not acknowledge exactly one deletion.")
+        acknowledgement = response.records[0]
+        if isinstance(acknowledgement, CKErrorItem):
+            raise RuntimeError(f"CloudKit rejected deletion: {acknowledgement.serverErrorCode}")
+        if not (
+            isinstance(acknowledgement, CKRecord)
+            and acknowledgement.recordName == name
+            and acknowledgement.recordType == record_record_type(record)
+            and record_field_value(acknowledgement, "isDeleted") == 1
+            and (record_zone(acknowledgement) is None or record_zone(acknowledgement) == zone)
+        ):
+            raise RuntimeError("CloudKit did not confirm this asset as deleted.")
+        return True
 
 
 def _build(settings: Settings, *, password: str | None, authenticate: bool) -> PyiCloudService:
