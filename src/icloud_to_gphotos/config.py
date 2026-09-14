@@ -107,6 +107,9 @@ class Settings(BaseSettings):
         ),
     )
     include_live_photo_video: bool = Field(default=True)
+    preserve_albums: bool = Field(
+        default=False, description="Preserve user albums before allowing iCloud deletion."
+    )
     include_alternative_original: bool = Field(
         default=False,
         description="Also upload resOriginalAlt (the JPEG beside a ProRAW DNG).",

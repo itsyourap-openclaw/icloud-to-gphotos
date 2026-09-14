@@ -70,6 +70,7 @@ class UploadReport:
     verdicts: list[FileVerdict] = field(default_factory=list)
     warnings: list[dict[str, object]] = field(default_factory=list)
     exit_code: int = 0
+    album: dict[str, object] | None = None
 
     def merge(self, other: UploadReport) -> None:
         """Fold another report into this one."""
@@ -154,6 +155,8 @@ def parse_summary(payload: dict[str, object]) -> UploadReport:
     )
 
     raw_warnings = payload.get("warnings")
+    if isinstance(payload.get("album"), dict):
+        report.album = payload["album"]  # type: ignore[assignment]
     if isinstance(raw_warnings, list):
         report.warnings = [w for w in raw_warnings if isinstance(w, dict)]
 
@@ -213,6 +216,7 @@ def upload_directory(
     pair_live_photos: bool,
     ignore_apple_metadata: bool = False,
     config_path: Path | None = None,
+    album: str | None = None,
     log_level: str = "info",
     timeout: int = 6 * 60 * 60,
 ) -> UploadReport:
@@ -245,6 +249,8 @@ def upload_directory(
             command.append("--ignore-apple-metadata")
     if config_path is not None:
         command += ["--config", str(config_path)]
+    if album is not None:
+        command += ["--album", album]
 
     LOGGER.info("Uploading %s via gotohp (%d threads)", directory, threads)
     LOGGER.debug("gotohp command: %s", " ".join(command))

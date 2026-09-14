@@ -55,6 +55,45 @@ def _settings() -> Settings:
     return settings
 
 
+@app.command("album-mappings")
+def album_mappings() -> None:
+    """List persistent source-album to Google Photos album mappings as JSON."""
+    from .albums import AlbumStore, album_state_path
+
+    settings = _settings()
+    try:
+        with migration_lock(settings):
+            session = connect(settings)
+            path = album_state_path(settings, session.library)
+            if not path.exists():
+                typer.echo("[]")
+                return
+            with AlbumStore(path) as store:
+                typer.echo(json.dumps(store.mappings(), indent=2))
+    except Exception as exc:
+        console.print(f"Could not list album mappings: {exc}", markup=False)
+        raise typer.Exit(EXIT_FAILED) from exc
+
+
+@app.command("bind-album")
+def bind_album(source_album_id: str, destination_album_key: str) -> None:
+    """Bind an existing destination album after inspecting an ambiguous create result."""
+    from .albums import AlbumStore, album_state_path
+
+    settings = _settings()
+    try:
+        with migration_lock(settings):
+            session = connect(settings)
+            if not any(str(album.id) == source_album_id for album in session.library.albums):
+                raise ValueError("Source album ID is not in the selected iCloud library.")
+            with AlbumStore(album_state_path(settings, session.library)) as store:
+                store.bind(source_album_id, destination_album_key)
+    except Exception as exc:
+        console.print(f"Could not bind album: {exc}", markup=False)
+        raise typer.Exit(EXIT_FAILED) from exc
+    typer.echo("Album mapping saved. The next run will verify pending memberships.")
+
+
 @app.command()
 def login(
     password: Annotated[
