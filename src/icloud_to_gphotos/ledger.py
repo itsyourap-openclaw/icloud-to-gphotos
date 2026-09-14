@@ -543,6 +543,15 @@ class Ledger:
         )
         return counts
 
+    def discovery_identity(self) -> str:
+        """Stable DB identity: a recreated ledger must not inherit an old scan cursor."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO meta VALUES ('discovery_identity', lower(hex(randomblob(16))))"
+        )
+        return str(self._conn.execute(
+            "SELECT value FROM meta WHERE key = 'discovery_identity'"
+        ).fetchone()["value"])
+
     def blocked_resources(self, limit: int = 50) -> list[ResourceRow]:
         """Return resources that have exhausted their retry budget."""
         rows = self._conn.execute(
