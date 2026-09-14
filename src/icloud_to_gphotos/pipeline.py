@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import albums as album_integration
 from .assets import PlannedAsset, plan_asset, sanitize_stem
 from .binaries import find_gotohp
 from .config import Settings
@@ -145,9 +146,7 @@ class Pipeline:
             "edited": settings.edited_staging_dir,
         }
         self._last_upload = UploadReport()
-        from .albums import AlbumSync
-
-        self._album_sync: AlbumSync | None = None
+        self._album_sync: album_integration.AlbumSync | None = None
 
     # --- Public entry point -------------------------------------------------
 
@@ -572,12 +571,10 @@ class Pipeline:
                 elif not planned.preservation_errors:
                     result.totals.skipped_recent += 1
 
-    def _album_manager(self):
-        from .albums import AlbumSync
-
+    def _album_manager(self) -> album_integration.AlbumSync | None:
         if self.settings.preserve_albums and not self.dry_run and self._album_sync is None:
             assert self.gotohp is not None
-            self._album_sync = AlbumSync(
+            self._album_sync = album_integration.AlbumSync(
                 self.settings, self.session.library, self.ledger, self.gotohp
             )
         return self._album_sync
