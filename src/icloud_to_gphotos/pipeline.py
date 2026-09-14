@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .archive import MetadataArchive
 from .assets import PlannedAsset, plan_asset, sanitize_stem
 from .binaries import find_gotohp
 from .config import Settings
@@ -178,6 +179,7 @@ class Pipeline:
     def _execute(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, dry_run=self.dry_run)
         self._pending_asset: Any = None
+        self._metadata_archive: MetadataArchive | None = None
         started = time.monotonic()
 
         if self.gotohp is None:
@@ -363,7 +365,19 @@ class Pipeline:
     def _plan(self, asset: Any) -> PlannedAsset:
         preferred = sanitize_stem(Path(asset.filename).stem)
         stem = self.ledger.reserve_stem(asset.id, preferred)
-        return plan_asset(asset, self.settings, stem)
+        planned = plan_asset(asset, self.settings, stem)
+        if self.settings.metadata_archive_dir is not None and not self.dry_run:
+            try:
+                if self._metadata_archive is None:
+                    self._metadata_archive = MetadataArchive(
+                        self.settings.metadata_archive_dir,
+                        self.settings.icloud_username,
+                        self.session.library,
+                    )
+                self._metadata_archive.write(planned)
+            except Exception as exc:
+                planned.preservation_errors.append(f"metadata archive failed: {exc}")
+        return planned
 
     def _register(self, planned: PlannedAsset) -> None:
         with self.ledger.transaction():

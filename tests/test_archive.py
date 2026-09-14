@@ -88,3 +88,17 @@ def test_partial_album_listing_cannot_authorize_deletion(make_pipeline, tmp_path
     pipe.settings.metadata_archive_dir = tmp_path / 'archive'
     assert pipe.run('partial-albums').totals.purged_assets == 0
     assert not list((tmp_path / 'archive').rglob('manifest.json'))
+
+
+def test_corrupted_committed_revision_is_not_silently_accepted(settings, tmp_path):
+    from icloud_to_gphotos.archive import MetadataArchive
+    planned = plan_asset(FakePhotoAsset('corrupt'), settings, 'corrupt')
+    store = MetadataArchive(tmp_path, 'test@example.invalid',
+                            SimpleNamespace(zone_id={'zoneName': 'root'}, albums=[]))
+    manifest = store.write(planned)
+    assert json.loads(manifest.parent.parent.joinpath('latest.json').read_text()) == {
+        'revision': manifest.parent.name,
+    }
+    manifest.with_name('metadata.xmp').write_bytes(b'corrupted')
+    with pytest.raises(OSError, match='corrupted'):
+        store.write(planned)

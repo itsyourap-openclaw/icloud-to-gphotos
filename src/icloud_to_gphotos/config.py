@@ -132,6 +132,10 @@ class Settings(BaseSettings):
         default=True,
         description="Use exiftool to write capture date/GPS into files that lack them.",
     )
+    metadata_archive_dir: Path | None = Field(
+        default=None,
+        description="Permanent JSON/XMP archive directory; unset disables archiving.",
+    )
 
     # --- Notifications ------------------------------------------------------
     ntfy_topic: str | None = Field(
@@ -151,6 +155,7 @@ class Settings(BaseSettings):
         "gotohp_binary",
         "gotohp_config",
         "exiftool_binary",
+        "metadata_archive_dir",
         mode="before",
     )
     @classmethod
@@ -167,6 +172,11 @@ class Settings(BaseSettings):
     def _derive_paths(self) -> Settings:
         if self.staging_dir is None:
             object.__setattr__(self, "staging_dir", self.state_dir / "staging")
+        if self.metadata_archive_dir is not None:
+            archive = self.metadata_archive_dir.resolve()
+            for temporary in (self.staging_dir, self.log_dir, self.report_dir):
+                if temporary is not None and archive.is_relative_to(temporary.resolve()):
+                    raise ValueError("Metadata archive must be outside staging and rotated logs.")
         return self
 
     # --- Derived paths ------------------------------------------------------
