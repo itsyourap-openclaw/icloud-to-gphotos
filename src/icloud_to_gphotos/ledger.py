@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 ResourceState = Literal["pending", "downloaded", "uploaded", "failed", "purged"]
 
@@ -161,9 +161,17 @@ class Ledger:
                     _RESET_RESOURCE_STATE + " WHERE resource_key = 'edited' AND state != 'purged'",
                     (_utcnow(),),
                 )
+            if version < 3:
+                # Legacy Live Photo confirmations did not distinguish a whole
+                # pair from a skip proving only one component existed remotely.
                 self._conn.execute(
-                    "UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
+                    _RESET_RESOURCE_STATE + " WHERE state != 'purged' AND asset_id IN "
+                    "(SELECT asset_id FROM assets WHERE is_live_photo = 1 AND purged_at IS NULL)",
+                    (_utcnow(),),
                 )
+            self._conn.execute(
+                "UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
+            )
 
     def close(self) -> None:
         """Close the underlying connection."""

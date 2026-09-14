@@ -68,7 +68,7 @@ def test_parse_summary_marks_successful_upload() -> None:
 
 @pytest.mark.parametrize(
     "skip_code",
-    ["remote-duplicate", "remote-live-photo-component-exists"],
+    ["remote-duplicate"],
 )
 def test_remote_duplicates_count_as_confirmed(skip_code: str) -> None:
     """Content already in Google Photos is the goal state, so it is safe to
@@ -157,6 +157,18 @@ def test_live_photo_pair_credits_both_components() -> None:
 
     assert report.uploaded_filenames == {"IMG_1.HEIC", "IMG_1.MOV"}
     assert all(v.media_key == "pair-key" for v in report.verdicts)
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_partial_live_photo_duplicate_never_confirms_pair(success: bool) -> None:
+    report = parse_summary({"results": [{
+        "paths": ["/staging/IMG.HEIC", "/staging/IMG.MOV"],
+        "success": success,
+        "skipped": True,
+        "skipCode": "remote-live-photo-component-exists",
+    }]})
+    assert len(report.verdicts) == 2
+    assert report.uploaded_filenames == set()
 
 
 def test_parse_summary_tolerates_missing_and_malformed_fields() -> None:

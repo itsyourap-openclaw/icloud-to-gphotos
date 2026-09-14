@@ -188,6 +188,25 @@ def test_live_photo_is_deleted_only_after_both_components_confirm(make_pipeline)
     assert {r.state for r in ledger.get_resources("a1")} == {"purged"}
 
 
+def test_partial_live_duplicate_retains_icloud_asset(make_pipeline, monkeypatch) -> None:
+    from icloud_to_gphotos.uploader import parse_summary
+
+    asset = FakePhotoAsset("partial-live", is_live_photo=True)
+    pipe, _, _, ledger = make_pipeline([asset])
+
+    def partial(directory, **_kwargs):
+        return parse_summary({"results": [{
+            "paths": [str(p) for p in directory.rglob("*") if p.is_file()],
+            "skipped": True, "skipCode": "remote-live-photo-component-exists",
+        }]})
+
+    monkeypatch.setattr(pipeline_module, "upload_directory", partial)
+    result = pipe.run("partial-live")
+    assert result.totals.uploaded == 0
+    assert not ledger.asset_ready_to_purge(asset.id)
+    assert asset.delete_calls == 0
+
+
 def test_edited_asset_uploads_in_two_unpaired_passes(make_pipeline, settings: Settings) -> None:
     """The edited render shares a stem with its still, so it must be uploaded in
     a separate pass with pairing off or gotohp would treat them as a pair."""

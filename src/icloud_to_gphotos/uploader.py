@@ -18,9 +18,7 @@ LOGGER = logging.getLogger(__name__)
 #: gotohp skip codes that mean "Google Photos already has this content".
 #: Treated as success: the goal is for the media to exist remotely, not for this
 #: particular run to have been the one that put it there.
-SUCCESSFUL_SKIP_CODES = frozenset(
-    {"remote-duplicate", "remote-live-photo-component-exists"}
-)
+SUCCESSFUL_SKIP_CODES = frozenset({"remote-duplicate"})
 
 #: Flags this project depends on that do not exist in the v0.8.1 release.
 #:
@@ -162,14 +160,18 @@ def parse_summary(payload: dict[str, object]) -> UploadReport:
     for entry in results:
         if not isinstance(entry, dict):
             continue
-        success = bool(entry.get("success"))
-        skipped = bool(entry.get("skipped"))
+        success = entry.get("success") is True
+        skipped = entry.get("skipped") is True
         skip_code = entry.get("skipCode")
         skip_code = str(skip_code) if skip_code else None
         media_key = entry.get("mediaKey")
         media_key = str(media_key) if media_key else None
 
-        uploaded = success or (skipped and skip_code in SUCCESSFUL_SKIP_CODES)
+        # A component-exists skip proves only one half of a Live Photo exists.
+        # Even a contradictory success flag must not turn a skip into proof.
+        uploaded = (skipped and skip_code in SUCCESSFUL_SKIP_CODES) or (
+            success and not skipped and skip_code is None
+        )
         reason = entry.get("error") or entry.get("skipReason")
 
         # A Live Photo is reported once but covers two staged files; credit both.
