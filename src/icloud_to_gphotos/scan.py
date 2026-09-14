@@ -34,6 +34,22 @@ def scan_state_path(settings: Settings, library: Any) -> Path:
     return settings.state_dir / "scans" / f"{scope}.db"
 
 
+def preservation_signature(settings: Settings, ledger: Ledger) -> str:
+    """Hash semantic preservation requirements, not credentials or tuning options."""
+    fields = (
+        "edited_policy", "include_live_photo_video", "include_alternative_original",
+        "backfill_metadata", "preserve_albums", "pair_live_photos",
+        "update_existing_photos_to_live", "ignore_apple_metadata",
+        "delete_from_icloud", "delete_grace_days",
+    )
+    policy = {name: getattr(settings, name) for name in fields}
+    for name in ("metadata_archive_dir", "gotohp_config"):
+        value = getattr(settings, name)
+        policy[name] = str(value.resolve()) if value is not None else None
+    policy.update(version=1, ledger=ledger.discovery_identity())
+    return hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+
+
 class ScanStore:
     """Persist IDs, not expiring resource URLs or serialized cloud credentials."""
 
@@ -48,6 +64,9 @@ class ScanStore:
             );
             INSERT OR IGNORE INTO checkpoint VALUES (1, NULL, NULL);
             CREATE TABLE IF NOT EXISTS pending (asset_id TEXT PRIMARY KEY, full_generation TEXT);
+            CREATE TABLE IF NOT EXISTS discovery_policy (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), fingerprint TEXT NOT NULL
+            );
         """)
 
     @property
@@ -59,6 +78,13 @@ class ScanStore:
         raw = self.db.execute("SELECT last_full FROM checkpoint").fetchone()["last_full"]
         return datetime.fromisoformat(raw) if raw else None
 
+    @property
+    def policy(self) -> str | None:
+        row = self.db.execute(
+            "SELECT fingerprint FROM discovery_policy WHERE singleton=1"
+        ).fetchone()
+        return str(row["fingerprint"]) if row else None
+
     def enqueue(self, asset_id: str, generation: str | None = None) -> None:
         self.db.execute(
             """INSERT INTO pending VALUES (?, ?) ON CONFLICT(asset_id) DO UPDATE
@@ -69,7 +95,9 @@ class ScanStore:
     def acknowledge(self, asset_id: str) -> None:
         self.db.execute("DELETE FROM pending WHERE asset_id=?", (asset_id,))
 
-    def checkpoint(self, cursor: str, generation: str | None = None) -> None:
+    def checkpoint(
+        self, cursor: str, generation: str | None = None, *, policy: str | None = None
+    ) -> None:
         if not cursor:
             raise RuntimeError("CloudKit did not supply a usable sync cursor")
         self.db.execute("BEGIN")
@@ -81,6 +109,9 @@ class ScanStore:
                     "UPDATE checkpoint SET cursor=?, last_full=?",
                     (cursor, datetime.now(UTC).isoformat()),
                 )
+                if policy is not None:
+                    self.db.execute("INSERT OR REPLACE INTO discovery_policy VALUES (1, ?)",
+                                    (policy,))
                 # Full enumeration proves these IDs are no longer in the selected view.
                 # Do not change upload/purge evidence in the migration ledger.
                 self.db.execute(
@@ -123,6 +154,7 @@ class ChangeScanner:
         self.settings, self.session, self.ledger = settings, session, ledger
         self.library = session.library
         self.store = ScanStore(scan_state_path(settings, self.library))
+        self.policy = preservation_signature(settings, ledger)
         self.mode = "full"
         self.events = 0
         self.lookup_failures = 0
@@ -140,12 +172,13 @@ class ChangeScanner:
             self.store.enqueue(str(asset.id), generation)
             yield asset
         # Not reached on a batch cap, failed page, generator close or interruption.
-        self.store.checkpoint(cursor, generation)
+        self.store.checkpoint(cursor, generation, policy=self.policy)
 
     def assets(self) -> Iterator[Any]:
         last_full = self.store.last_full
         if (
-            not self.store.cursor
+            self.store.policy != self.policy
+            or not self.store.cursor
             or last_full is None
             or (
                 datetime.now(UTC) - last_full
