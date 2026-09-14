@@ -34,7 +34,11 @@ def select_assets(library: Any, includes: list[str], excludes: list[str]) -> Ite
     seen: set[str] = set()
     sources = selected if includes else [library.all]
     for source in sources:
-        for asset in source.photos:
+        # CloudKit album listing uses positional ranks. Complete this album's
+        # listing before yielding assets whose deletion could shift the next page.
+        # Buffer one album at a time; exclusions and cross-album dedup stay intact.
+        snapshot = list(source.photos)
+        for asset in snapshot:
             key = str(asset.id)
             if key in seen or key in excluded_ids:
                 continue
