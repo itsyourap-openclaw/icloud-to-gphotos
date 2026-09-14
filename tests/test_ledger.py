@@ -66,6 +66,17 @@ def test_reserve_stem_is_stable_for_the_same_asset(ledger: Ledger) -> None:
     assert ledger.reserve_stem("asset-1", "COMPLETELY_DIFFERENT") == "IMG_0001"
 
 
+def test_legacy_colliding_stem_is_repaired_and_reserved_durably(ledger):
+    _add_asset(ledger, "first", "IMG")
+    _add_asset(ledger, "second", "IMG_alt")
+    repaired = ledger.reserve_stem("second", "IMG_alt")
+    assert repaired != "IMG_alt"
+    _add_asset(ledger, "second", repaired)
+    assert ledger.get_asset("second").stem == repaired
+    assert ledger.reserve_stem("third", repaired) != repaired
+    assert ledger.reserve_stem("second", "ignored") == repaired
+
+
 def test_asset_ready_to_purge_requires_every_resource_uploaded(ledger: Ledger) -> None:
     # Arrange: a Live Photo with a still and a video component.
     _add_asset(ledger, "asset-1")
@@ -181,12 +192,13 @@ def test_legacy_edited_confirmations_are_invalidated_once_on_upgrade(tmp_path):
             connection.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
 
     with Ledger(path) as ledger:
-        assert ledger.get_resource("asset-1", "original").is_uploaded
+        assert not ledger.get_resource("asset-1", "original").is_uploaded
         render = ledger.get_resource("asset-1", "edited")
         assert render.state == "pending"
         assert render.media_key is None
         assert not ledger.asset_ready_to_purge("asset-1")
         ledger.mark_uploaded("asset-1", "edited", "current-render-key")
+        ledger.mark_uploaded("asset-1", "original", "verified-original-key")
 
     with Ledger(path) as ledger:
         assert ledger.asset_ready_to_purge("asset-1")

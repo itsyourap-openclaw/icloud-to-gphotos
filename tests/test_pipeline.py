@@ -160,6 +160,65 @@ def make_pipeline(settings: Settings, tmp_path: Path, monkeypatch: pytest.Monkey
 # --- The happy path --------------------------------------------------------
 
 
+def test_render_failure_cannot_borrow_same_basename_confirmation(make_pipeline, monkeypatch):
+    from icloud_to_gphotos.uploader import parse_summary
+
+    portrait = FakePhotoAsset("portrait", filename="IMG.HEIC", edited_size=len(DEFAULT_PAYLOAD))
+    other = FakePhotoAsset("other", filename="IMG_edited.JPG")
+    pipe, _, _, ledger = make_pipeline([portrait, other])
+
+    def upload(directory, **_kwargs):
+        return parse_summary({"results": [{
+            "path": str(p), "success": directory.name == "media",
+            "error": "render rejected" if directory.name == "edited" else None,
+        } for p in directory.rglob("*") if p.is_file()]})
+
+    monkeypatch.setattr(pipeline_module, "upload_directory", upload)
+    pipe.run("collision")
+    assert portrait.delete_calls == 0
+    assert other.delete_calls == 1
+    assert not ledger.get_resource(portrait.id, "edited").is_uploaded
+
+
+def test_alternative_original_does_not_overwrite_another_asset(make_pipeline, settings):
+    settings.include_alternative_original = True
+    first = FakePhotoAsset("first", filename="IMG.HEIC", resources={
+        "original": make_resource("original", "IMG.HEIC"),
+        "alternative": make_resource("alternative", "IMG.JPG"),
+    })
+    second = FakePhotoAsset("second", filename="IMG_alt.JPG")
+    pipe, _, gotohp, _ = make_pipeline([first, second])
+    result = pipe.run("alternative-collision")
+    assert len(gotohp.calls[0]["files"]) == 3
+    assert result.totals.uploaded == 3
+
+
+@pytest.mark.parametrize("wrong_directory", [True, False])
+def test_unbound_or_conflicting_verdict_is_not_proof(make_pipeline, monkeypatch, wrong_directory):
+    from icloud_to_gphotos.uploader import parse_summary
+
+    asset = FakePhotoAsset("unbound")
+    pipe, _, _, _ = make_pipeline([asset])
+
+    def upload(directory, **_kwargs):
+        entries = []
+        for path in directory.rglob("*"):
+            if not path.is_file():
+                continue
+            if wrong_directory:
+                entries.append({"path": str(directory / "elsewhere" / path.name), "success": True})
+            else:
+                entries.extend([
+                    {"path": str(path), "success": True},
+                    {"path": str(path), "success": False},
+                ])
+        return parse_summary({"results": entries})
+
+    monkeypatch.setattr(pipeline_module, "upload_directory", upload)
+    assert pipe.run("unbound").totals.uploaded == 0
+    assert asset.delete_calls == 0
+
+
 def test_confirmed_upload_of_an_old_asset_is_deleted_from_icloud(make_pipeline) -> None:
     asset = FakePhotoAsset("a1", filename="IMG_1.HEIC", asset_date=days_ago(30))
     pipe, _session, gotohp, ledger = make_pipeline([asset])
