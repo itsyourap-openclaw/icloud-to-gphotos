@@ -1,3 +1,4 @@
+# ruff: noqa: F811
 """Opt-in repair must prove a linked pair, including on upgrades and retries."""
 
 from pathlib import Path
@@ -99,3 +100,24 @@ def test_dry_run_does_not_reset_existing_confirmations(make_pipeline, monkeypatc
     pipe.dry_run = True
     pipe.run('preview')
     assert list(ledger._conn.iterdump()) == saved
+
+
+def test_changed_pair_requires_fresh_linkage(make_pipeline, monkeypatch):
+    asset = FakePhotoAsset('changed-pair', is_live_photo=True)
+    pipe, _, uploader, ledger = make_pipeline([asset])
+    enable(pipe, monkeypatch)
+    pipe.settings.delete_from_icloud = False
+    pipe.run('first')
+    asset.resources['original_video'].checksum = 'new-motion-checksum'
+    assert pipe.run('changed').totals.downloaded == 2
+
+
+def test_exhausted_legacy_component_skips_get_a_repair_attempt(make_pipeline, monkeypatch):
+    asset = FakePhotoAsset('exhausted', is_live_photo=True)
+    pipe, _, _, ledger = make_pipeline([asset])
+    pipe._register(pipe._plan(asset))
+    for key in ('original', 'original_video'):
+        for _ in range(5):
+            ledger.mark_failed(asset.id, key, 'component exists')
+    enable(pipe, monkeypatch)
+    assert pipe.run('repair-exhausted').totals.purged_assets == 1
