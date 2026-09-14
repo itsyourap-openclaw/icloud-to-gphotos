@@ -120,8 +120,8 @@ def test_resource_becomes_exhausted_after_max_attempts(ledger: Ledger) -> None:
     assert [r.asset_id for r in ledger.blocked_resources()] == ["asset-1"]
 
 
-def test_upsert_resource_preserves_uploaded_state(ledger: Ledger) -> None:
-    """Re-registering a resource on a later run must not reset its progress."""
+def test_checksumless_resource_requires_reconfirmation(ledger: Ledger) -> None:
+    """Size and name alone cannot prove a rendition is unchanged."""
     _add_asset(ledger, "asset-1")
     _add_resource(ledger, "asset-1", "original", "IMG_0001.HEIC")
     ledger.mark_uploaded("asset-1", "original", "media-key")
@@ -130,8 +130,8 @@ def test_upsert_resource_preserves_uploaded_state(ledger: Ledger) -> None:
 
     row = ledger.get_resource("asset-1", "original")
     assert row is not None
-    assert row.state == "uploaded"
-    assert row.media_key == "media-key"
+    assert row.state == "pending"
+    assert row.media_key is None
 
 
 @pytest.mark.parametrize(
@@ -163,7 +163,7 @@ def test_changed_resource_requires_fresh_confirmation(ledger, checksum, size, fi
     assert not ledger.asset_ready_to_purge("asset-1")
 
 
-def test_missing_identity_fields_do_not_erase_known_fingerprint(ledger):
+def test_missing_current_fingerprint_cannot_reuse_historical_proof(ledger):
     _add_asset(ledger, "asset-1")
     fields = {
         "asset_id": "asset-1", "resource_key": "edited", "staging_root": "edited",
@@ -174,10 +174,10 @@ def test_missing_identity_fields_do_not_erase_known_fingerprint(ledger):
 
     row = ledger.upsert_resource(**fields, checksum=None, size=None)
 
-    assert row.is_uploaded
-    assert row.checksum == "render"
+    assert not row.is_uploaded
+    assert row.checksum is None
     assert row.size == 100
-    assert ledger.upsert_resource(**fields, checksum="render", size=100).is_uploaded
+    assert not ledger.upsert_resource(**fields, checksum="render", size=100).is_uploaded
 
 
 def test_legacy_edited_confirmations_are_invalidated_once_on_upgrade(tmp_path):
