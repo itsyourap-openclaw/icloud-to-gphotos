@@ -7,6 +7,7 @@ empty download must never be left where the uploader would find it.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from icloud_to_gphotos.assets import plan_asset
 from icloud_to_gphotos.config import Settings
@@ -20,6 +21,54 @@ from .conftest import (
     FakeSession,
     make_resource,
 )
+
+
+def test_unknown_size_aborts_before_headroom_and_releases_reservation(
+    settings, staging_dirs, monkeypatch,
+):
+    from icloud_to_gphotos import downloader
+
+    monkeypatch.setattr(downloader, "CHUNK_BYTES", 4)
+    # The mock volume starts at 28 free bytes; 8 must remain untouched.
+    def disk_usage(_path):
+        used = sum(p.stat().st_size for p in settings.staging_dir.rglob("*") if p.is_file())
+        assert used <= 20
+        return SimpleNamespace(free=28 - used)
+
+    monkeypatch.setattr(downloader.shutil, "disk_usage", disk_usage)
+    too_large = _asset(b"x" * 24)
+    too_large.resources["original"].size = None
+    good = FakePhotoAsset("good", filename="GOOD.HEIC")
+    outcome = download_batch(
+        [plan_asset(too_large, settings, "LARGE"), plan_asset(good, settings, "GOOD")],
+        staging_dirs, workers=1, disk_headroom_bytes=8,
+    )
+    assert [item.asset_id for item in outcome.files] == ["good"]
+    assert outcome.failures[0].capacity_limited
+    assert len(too_large._service.session.requested) == 1  # no futile capacity retries
+    assert not list(settings.staging_dir.rglob("*.part"))
+
+
+def test_concurrent_streams_share_one_capacity_limit(settings, staging_dirs, monkeypatch):
+    from icloud_to_gphotos import downloader
+
+    monkeypatch.setattr(downloader.shutil, "disk_usage", lambda _: SimpleNamespace(free=25))
+    batch = [plan_asset(FakePhotoAsset(str(i)), settings, f"IMG_{i}") for i in range(4)]
+    outcome = download_batch(batch, staging_dirs, workers=4)
+    assert outcome.bytes_written == len(DEFAULT_PAYLOAD)
+    assert len(outcome.files) == 1
+    assert len(outcome.failures) == 3
+    assert all(f.capacity_limited for f in outcome.failures)
+
+
+def test_stream_checks_new_external_disk_pressure(settings, staging_dirs, monkeypatch):
+    from icloud_to_gphotos import downloader
+
+    free = iter([100, 8])  # ample when reserving; consumed by another process before writing
+    monkeypatch.setattr(downloader.shutil, "disk_usage", lambda _: SimpleNamespace(free=next(free)))
+    outcome = download_batch([plan_asset(_asset(b"x" * 16), settings, "IMG")], staging_dirs)
+    assert outcome.files == []
+    assert outcome.failures[0].capacity_limited
 
 URL = "https://cloudkit.invalid/asset"
 

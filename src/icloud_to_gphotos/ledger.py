@@ -416,6 +416,14 @@ class Ledger:
             (error[:2000], _utcnow(), asset_id, resource_key),
         )
 
+    def mark_deferred(self, asset_id: str, resource_key: str, error: str) -> None:
+        """Retry capacity-limited work later without exhausting media retries."""
+        self._conn.execute(
+            "UPDATE resources SET state = 'pending', error = ?, updated_at = ? "
+            "WHERE asset_id = ? AND resource_key = ?",
+            (error[:2000], _utcnow(), asset_id, resource_key),
+        )
+
     def asset_ready_to_purge(self, asset_id: str) -> bool:
         """True when every recorded resource of the asset is confirmed uploaded.
 

@@ -177,6 +177,7 @@ class Pipeline:
 
     def _execute(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, dry_run=self.dry_run)
+        self._pending_asset: Any = None
         started = time.monotonic()
 
         if self.gotohp is None:
@@ -292,9 +293,17 @@ class Pipeline:
         """
         batch = _Batch()
         now = datetime.now(UTC)
+        disk_budget = self._available_disk_bytes()
 
-        for asset in assets:
-            result.totals.scanned += 1
+        while True:
+            if self._pending_asset is not None:
+                asset, self._pending_asset = self._pending_asset, None
+            else:
+                try:
+                    asset = next(assets)
+                except StopIteration:
+                    break
+                result.totals.scanned += 1
             try:
                 planned = self._plan(asset)
             except Exception as exc:  # noqa: BLE001 - one bad asset must not stop the run
@@ -319,8 +328,19 @@ class Pipeline:
             ]
 
             if outstanding:
+                required = sum(max(res.size or 0, 0) for res in outstanding)
+                if required > disk_budget:
+                    result.errors.append(
+                        f"{planned.asset_id}: needs {_human(required)}, but only "
+                        f"{_human(max(disk_budget, 0))} is available above disk headroom; deferred."
+                    )
+                    result.status = "partial"
+                    continue
+                if batch.planned_bytes + required > disk_budget:
+                    self._pending_asset = asset
+                    break
                 batch.to_download.append(planned)
-                batch.planned_bytes += sum(res.size or 0 for res in outstanding)
+                batch.planned_bytes += required
                 result.totals.planned += len(outstanding)
             elif self.ledger.asset_ready_to_purge(planned.asset_id):
                 # Uploaded on an earlier run but not yet deletable then.
@@ -398,12 +418,18 @@ class Pipeline:
             self._staging,
             workers=self.settings.download_workers,
             skip_keys=skip_keys,
+            disk_headroom_bytes=self.settings.disk_headroom_bytes,
+            reservation_factor=self._disk_reservation_factor(),
         )
         with self.ledger.transaction():
             for item in outcome.files:
                 self.ledger.mark_downloaded(item.asset_id, item.resource_key, item.size)
             for failure in outcome.failures:
-                self.ledger.mark_failed(
+                mark = (
+                    self.ledger.mark_deferred if failure.capacity_limited
+                    else self.ledger.mark_failed
+                )
+                mark(
                     failure.asset_id, failure.resource_key, f"download: {failure.error}"
                 )
 
@@ -616,12 +642,22 @@ class Pipeline:
         The configured cap, shrunk to whatever the filesystem can actually spare
         above the headroom. Returns 0 or less when there is no room to work.
         """
+        return min(self.settings.batch_max_bytes, self._available_disk_bytes())
+
+    def _available_disk_bytes(self) -> int:
+        """Hard disk limit, independent of the configured soft batch cap."""
         assert self.settings.staging_dir is not None
         try:
             free = shutil.disk_usage(self.settings.staging_dir).free
-        except OSError:  # Unmounted or unreadable; trust the configured cap.
-            return self.settings.batch_max_bytes
-        return min(self.settings.batch_max_bytes, free - self.settings.disk_headroom_bytes)
+        except OSError:
+            LOGGER.error("Cannot determine free space; refusing downloads.", exc_info=True)
+            return 0
+        return (free - self.settings.disk_headroom_bytes) // self._disk_reservation_factor()
+
+    def _disk_reservation_factor(self) -> int:
+        # ExifTool may temporarily rewrite a complete file. Leave room for a
+        # second copy of the batch while repairing metadata.
+        return 2 if self.settings.backfill_metadata and self.exiftool is not None else 1
 
 
 def _human(size: float) -> str:

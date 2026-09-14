@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     disk_headroom_bytes: int = Field(
         default=5 * GiB,
         ge=0,
-        description="Refuse to start a batch unless this much free disk remains.",
+        description="Preserve this much free disk during admission and streaming downloads.",
     )
 
     # --- Behaviour ----------------------------------------------------------
