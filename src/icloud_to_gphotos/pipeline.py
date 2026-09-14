@@ -24,7 +24,7 @@ import logging
 import shutil
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +38,7 @@ from .icloud_client import ICloudSession
 from .ledger import Ledger
 from .locking import MigrationBusy, migration_lock
 from .metadata import MetadataReport, backfill_batch, find_exiftool
+from .scan import ChangeScanner
 from .uploader import FileVerdict, UploadError, UploadReport, upload_directory, verify_compatible
 
 LOGGER = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ class RunResult:
     blocked: list[dict[str, Any]] = field(default_factory=list)
     library_remaining: int | None = None
     would_delete: list[str] = field(default_factory=list)
+    scan: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         """Serialise for the JSON run report."""
@@ -108,6 +110,7 @@ class RunResult:
             "blocked": self.blocked,
             "library_remaining": self.library_remaining,
             "would_delete": self.would_delete[:200],
+            "scan": self.scan,
         }
 
 
@@ -140,6 +143,7 @@ class Pipeline:
         self.dry_run = dry_run
         self.exiftool = find_exiftool(settings.exiftool_binary)
         self.gotohp = find_gotohp(settings.gotohp_binary)
+        self._scanner: ChangeScanner | None = None
         self._staging = {
             "media": settings.media_staging_dir,
             "edited": settings.edited_staging_dir,
@@ -209,7 +213,7 @@ class Pipeline:
             )
 
         self._clear_staging()
-        assets = self.session.iter_all_assets()
+        assets = self._source_assets()
 
         try:
             while True:
@@ -244,6 +248,7 @@ class Pipeline:
                     len(batch.ready_to_purge),
                 )
                 self._process_batch(batch, result)
+                self._settle_scan(batch, result)
                 self._clear_staging()
         except KeyboardInterrupt:
             result.status = "interrupted"
@@ -253,6 +258,16 @@ class Pipeline:
             result.status = "error"
             result.errors.append(f"{type(exc).__name__}: {exc}")
             LOGGER.exception("Run failed")
+
+        assets.close()
+        if self._scanner is not None:
+            result.scan = self._scanner.summary()
+            if self._scanner.lookup_failures:
+                result.errors.append(
+                    f"{self._scanner.lookup_failures} asset lookups deferred for retry."
+                )
+            self._scanner.close()
+            self._scanner = None
 
         result.blocked = [
             {
@@ -281,6 +296,32 @@ class Pipeline:
         return result
 
     # --- Batch collection ---------------------------------------------------
+
+    def _source_assets(self) -> Generator[Any, None, None]:
+        filtered = bool(
+            getattr(self.settings, "include_albums", [])
+            or getattr(self.settings, "exclude_albums", [])
+        )
+        if self.settings.incremental_scan and not self.dry_run and not filtered:
+            self._scanner = ChangeScanner(self.settings, self.session, self.ledger)
+            yield from self._scanner.assets()
+        else:
+            # Filtered traversals must use the session's selectors, never all.get().
+            yield from self.session.iter_all_assets()
+
+    def _settle_scan(self, batch: _Batch, result: RunResult) -> None:
+        if self._scanner is None:
+            return
+        for planned in batch.to_download + batch.ready_to_purge:
+            row = self.ledger.get_asset(planned.asset_id)
+            purged = row is not None and row.purged_at is not None
+            backed_up = (
+                not self.settings.delete_from_icloud and not planned.preservation_errors
+                and not result.errors and not result.totals.failed
+                and self.ledger.asset_ready_to_purge(planned.asset_id)
+            )
+            if purged or backed_up:
+                self._scanner.store.acknowledge(planned.asset_id)
 
     def _collect_batch(
         self, assets: Iterator[Any], result: RunResult, byte_budget: int

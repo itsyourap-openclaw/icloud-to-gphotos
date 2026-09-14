@@ -319,6 +319,12 @@ class Ledger:
             "UPDATE assets SET purge_error = ? WHERE asset_id = ?", (error, asset_id)
         )
 
+    def asset_ids_for_master(self, master_id: str) -> list[str]:
+        """Map a master-only change event back to retained asset IDs."""
+        return [row["asset_id"] for row in self._conn.execute(
+            "SELECT asset_id FROM assets WHERE master_id = ? AND purged_at IS NULL", (master_id,)
+        )]
+
     # --- Resources ----------------------------------------------------------
 
     def get_resource(self, asset_id: str, resource_key: str) -> ResourceRow | None:
