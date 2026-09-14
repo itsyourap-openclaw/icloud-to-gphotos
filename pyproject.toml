@@ -7,7 +7,7 @@ requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "Ankan" }]
 dependencies = [
-    "pyicloud>=2.6.5",
+    "pyicloud>=2.7.0",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
     "python-dotenv>=1.0",

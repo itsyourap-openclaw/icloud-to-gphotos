@@ -30,7 +30,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .albums import AlbumSync
 from .assets import PlannedAsset, plan_asset, sanitize_stem
 from .binaries import find_gotohp
 from .config import Settings
@@ -146,6 +145,8 @@ class Pipeline:
             "edited": settings.edited_staging_dir,
         }
         self._last_upload = UploadReport()
+        from .albums import AlbumSync
+
         self._album_sync: AlbumSync | None = None
 
     # --- Public entry point -------------------------------------------------
@@ -571,7 +572,9 @@ class Pipeline:
                 elif not planned.preservation_errors:
                     result.totals.skipped_recent += 1
 
-    def _album_manager(self) -> AlbumSync | None:
+    def _album_manager(self):
+        from .albums import AlbumSync
+
         if self.settings.preserve_albums and not self.dry_run and self._album_sync is None:
             assert self.gotohp is not None
             self._album_sync = AlbumSync(
@@ -605,10 +608,9 @@ class Pipeline:
         recorded = self.ledger.get_asset(planned.asset_id)
         if recorded is None:
             return False
-        if self._album_sync is not None and self._album_sync.pending(planned):
-            return False
         return (
-            not planned.preservation_errors
+            (self._album_sync is None or not self._album_sync.pending(planned))
+            and not planned.preservation_errors
             and planned.preservation_age_days(datetime.fromisoformat(recorded.first_seen_at), now)
             >= self.settings.delete_grace_days
         )
