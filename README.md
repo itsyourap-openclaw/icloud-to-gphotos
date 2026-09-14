@@ -14,20 +14,20 @@ side and [xob0t/gotohp](https://github.com/xob0t/gotohp) for the Google Photos s
 
 ## What it actually does
 
-```
+```text
                         ┌─────────────────────────────────────────┐
                         │  one batch, bounded by size and count   │
                         └─────────────────────────────────────────┘
   iCloud Photos                                                    Google Photos
   (oldest first)                                                          ▲
         │                                                                 │
-        │  1. collect      plan resources per asset                        │
+        │  1. collect      plan resources per asset                       │
         ▼                                                                 │
-   ┌──────────┐   2. download    ┌───────────┐   4. upload    ┌────────────┴───┐
+   ┌──────────┐   2. download    ┌───────────┐   4. upload    ┌───────────┴────┐
    │ pyicloud │ ───────────────► │  staging  │ ─────────────► │  gotohp-cli    │
    └──────────┘   streamed,      └───────────┘  --no-tui,     └────────┬───────┘
         ▲         atomic               │        JSON summary           │
-        │                              │                              │
+        │                              │                               │
         │                 3. backfill missing date/GPS      5. verify per file
         │                    with exiftool                             │
         │                                                              ▼
@@ -73,11 +73,11 @@ scrambles a migrated timeline.
 So the pipeline **backfills only what is missing**, from iCloud's own CloudKit
 record, and never overwrites a tag that already exists:
 
-| Source field                    | Written to (images)                    | Written to (videos)                            |
-| ------------------------------- | -------------------------------------- | ---------------------------------------------- |
-| `assetDate` + `timeZoneOffset`  | `EXIF:DateTimeOriginal` + `OffsetTime` | `QuickTime:CreateDate` (UTC), `Keys:CreationDate` (with offset) |
-| `locationEnc`                   | `EXIF:GPSLatitude/Longitude/Altitude` + refs | `Keys:GPSCoordinates`, `UserData:GPSCoordinates` (ISO 6709) |
-| `assetDate`                     | file mtime                             | file mtime                                     |
+| Source field                    | Written to (images)                          | Written to (videos)                                             |
+| ------------------------------- | -------------------------------------------- | --------------------------------------------------------------- |
+| `assetDate` + `timeZoneOffset`  | `EXIF:DateTimeOriginal` + `OffsetTime`       | `QuickTime:CreateDate` (UTC), `Keys:CreationDate` (with offset) |
+| `locationEnc`                   | `EXIF:GPSLatitude/Longitude/Altitude` + refs | `Keys:GPSCoordinates`, `UserData:GPSCoordinates` (ISO 6709)     |
+| `assetDate`                     | file mtime                                   | file mtime                                                      |
 
 Two details that are easy to get wrong and are covered by integration tests
 against the real exiftool binary:
@@ -132,7 +132,7 @@ Then schedule it:
 | Platform | Command |
 | -------- | ------- |
 | Linux VM | `sudo ./deploy/install-linux.sh` — systemd timer at 00:00 IST |
-| Windows  | `.\deploy\register-windows-task.ps1` — Task Scheduler, daily |
+| Windows | `.\deploy\register-windows-task.ps1` — Task Scheduler, daily |
 
 Full instructions: [docs/SETUP.md](docs/SETUP.md),
 [docs/DEPLOY_LINUX.md](docs/DEPLOY_LINUX.md),
@@ -213,4 +213,4 @@ tests that prove the tags written are actually accepted and read back correctly.
 
 ## Licence
 
-MIT
+[MIT](LICENSE)
