@@ -160,6 +160,36 @@ def make_pipeline(settings: Settings, tmp_path: Path, monkeypatch: pytest.Monkey
 # --- The happy path --------------------------------------------------------
 
 
+def test_dry_run_preserves_existing_staging_and_resource_ledger(make_pipeline, settings):
+    old = settings.media_staging_dir / "existing.HEIC"
+    old.write_bytes(b"active migration bytes")
+    pipe, _, _, ledger = make_pipeline([FakePhotoAsset("preview")], dry_run=True)
+    pipe.run("preview")
+    assert old.read_bytes() == b"active migration bytes"
+    assert ledger.get_asset("preview") is None
+
+
+def test_real_run_owns_only_its_staging_subdirectory(make_pipeline, settings):
+    old = settings.media_staging_dir / "existing.HEIC"
+    old.write_bytes(b"another run")
+    pipe, _, gotohp, _ = make_pipeline([FakePhotoAsset("isolated")])
+    pipe.run("isolated")
+    assert old.read_bytes() == b"another run"
+    assert all("existing.HEIC" not in call["files"] for call in gotohp.calls)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_busy_pipeline_never_scans_or_mutates(make_pipeline, settings, dry_run):
+    from icloud_to_gphotos.locking import migration_lock
+
+    pipe, session, _, ledger = make_pipeline([FakePhotoAsset("busy")], dry_run=dry_run)
+    with migration_lock(settings):
+        result = pipe.run("busy")
+    assert result.status == "error"
+    assert session.iterations == 0
+    assert ledger.get_asset("busy") is None
+
+
 def test_render_failure_cannot_borrow_same_basename_confirmation(make_pipeline, monkeypatch):
     from icloud_to_gphotos.uploader import parse_summary
 
@@ -597,8 +627,8 @@ def test_dry_run_touches_nothing(make_pipeline) -> None:
     assert gotohp.calls == []
     assert asset.delete_calls == 0
     assert result.totals.downloaded == 0
-    # The asset is still registered so `--dry-run` reports a real plan.
-    assert ledger.get_asset("a1") is not None
+    # Planning uses a snapshot; durable resource state is not changed.
+    assert ledger.get_asset("a1") is None
     assert result.totals.planned == 1
 
 

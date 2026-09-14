@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ from .config import Settings
 from .downloader import download_batch, resource_path
 from .icloud_client import ICloudSession
 from .ledger import Ledger
+from .locking import MigrationBusy, migration_lock
 from .metadata import MetadataReport, backfill_batch, find_exiftool
 from .uploader import FileVerdict, UploadError, UploadReport, upload_directory, verify_compatible
 
@@ -148,6 +150,32 @@ class Pipeline:
 
     def run(self, run_id: str) -> RunResult:
         """Execute a full run and return its result."""
+        try:
+            with migration_lock(self.settings):
+                return self._run_locked(run_id)
+        except MigrationBusy as exc:
+            return RunResult(run_id=run_id, dry_run=self.dry_run, status="error", errors=[str(exc)])
+
+    def _run_locked(self, run_id: str) -> RunResult:
+        """Run while the caller holds both locks (also used by the CLI)."""
+        if self.dry_run:
+            original_ledger = self.ledger
+            with original_ledger.snapshot() as preview:
+                self.ledger = preview
+                try:
+                    return self._execute(run_id)
+                finally:
+                    self.ledger = original_ledger
+        assert self.settings.staging_dir is not None
+        previous_staging = self._staging
+        with tempfile.TemporaryDirectory(prefix="run-", dir=self.settings.staging_dir) as staging:
+            self._staging = {"media": Path(staging) / "media", "edited": Path(staging) / "edited"}
+            try:
+                return self._execute(run_id)
+            finally:
+                self._staging = previous_staging
+
+    def _execute(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, dry_run=self.dry_run)
         started = time.monotonic()
 
@@ -566,6 +594,8 @@ class Pipeline:
 
     def _clear_staging(self) -> None:
         """Empty the staging directories between batches."""
+        if self.dry_run:
+            return
         for directory in self._staging.values():
             if directory.exists():
                 shutil.rmtree(directory, ignore_errors=True)
