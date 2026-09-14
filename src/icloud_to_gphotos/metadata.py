@@ -16,6 +16,7 @@ helper and log the reduced coverage.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .assets import PlannedAsset
+from .assets import PlannedAsset, PlannedResource
 
 LOGGER = logging.getLogger(__name__)
 
@@ -63,11 +64,13 @@ class MetadataReport:
     mtimes_set: int = 0
     errors: list[str] = field(default_factory=list)
     exiftool_available: bool = True
+    verified_files: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, object]:
         """Serialise for the JSON run report."""
         return {
             "files_examined": self.files_examined,
+            "files_verified": len(self.verified_files),
             "dates_written": self.dates_written,
             "gps_written": self.gps_written,
             "mtimes_set": self.mtimes_set,
@@ -293,49 +296,66 @@ def backfill_batch(
 
     existing = probe_files(exiftool, [path for _, path in items])
     write_blocks: list[list[str]] = []
+    requested: dict[str, tuple[bool, bool]] = {}
+    supported: list[tuple[PlannedAsset, Path]] = []
 
     for planned, path in items:
         suffix = path.suffix.lower()
         if suffix not in IMAGE_SUFFIXES and suffix not in VIDEO_SUFFIXES:
+            report.errors.append(f"{path.name}: metadata verification is unsupported")
             continue
-        tags = existing.get(str(path), {})
-        args: list[str] = []
-
-        date_keys = (
-            ("QuickTime:CreateDate", "Keys:CreationDate", "CreationDate", "CreateDate")
-            if suffix in VIDEO_SUFFIXES
-            else ("DateTimeOriginal", "CreateDate", "DateCreated")
-        )
-        if not _has_date(tags, date_keys):
-            args += _date_args(path, planned.local_date)
-            report.dates_written += 1
-
-        if planned.location and not _has_gps(tags):
+        tags = existing.get(str(path))
+        if tags is None or tags.get("Error"):
+            report.errors.append(f"{path.name}: metadata probe did not return readable tags")
+            continue
+        supported.append((planned, path))
+        needs_date = not _has_date(tags, _date_keys(path))
+        needs_gps = bool(planned.location) and not _has_gps(tags)
+        requested[str(path)] = (needs_date, needs_gps)
+        args = _date_args(path, planned.local_date) if needs_date else []
+        if needs_gps:
             args += _gps_args(path, planned.location)
-            report.gps_written += 1
-
         if args:
             write_blocks.append([*args, "-overwrite_original", "-m", str(path), "-execute"])
 
-    if not write_blocks:
-        return report
+    observed = existing
+    if write_blocks:
+        result = _run_exiftool(exiftool, [arg for block in write_blocks for arg in block])
+        if result.returncode not in (0, 1):
+            message = f"exiftool write pass returned {result.returncode}"
+            LOGGER.warning(message)
+            report.errors.append(message)
+        # Exit status alone cannot prove a tag was written (some failures warn).
+        observed = probe_files(exiftool, [path for _, path in supported])
 
-    flat = [arg for block in write_blocks for arg in block]
-    result = _run_exiftool(exiftool, flat)
-    if result.returncode not in (0, 1):
-        message = f"exiftool write pass returned {result.returncode}: {result.stderr.strip()[:500]}"
-        LOGGER.warning(message)
-        report.errors.append(message)
-    elif result.stderr.strip():
-        for line in result.stderr.strip().splitlines():
-            if line.lower().startswith(("error", "warning: ")):
-                report.errors.append(line.strip())
-
-    # exiftool rewrites the file, which resets mtime; restore it.
-    for planned, path in items:
+    for planned, path in supported:
+        tags = observed.get(str(path), {})
+        if (tags.get("Error") or not _has_date(tags, _date_keys(path))
+                or (planned.location and not _has_gps(tags))):
+            report.errors.append(f"{path.name}: required date/GPS metadata was not verified")
+        else:
+            report.verified_files.append(str(path))
+            date, gps = requested[str(path)]
+            report.dates_written += int(date)
+            report.gps_written += int(gps)
         _set_mtime(path, planned.local_date)
-
     return report
+
+
+def _date_keys(path: Path) -> tuple[str, ...]:
+    if path.suffix.lower() in VIDEO_SUFFIXES:
+        return ("QuickTime:CreateDate", "Keys:CreationDate", "CreationDate", "CreateDate")
+    return ("DateTimeOriginal", "CreateDate", "DateCreated")
+
+
+def preservation_signature(
+    planned: PlannedAsset, resource: PlannedResource, epoch: str
+) -> str:
+    """Bind metadata evidence to source bytes and required date/GPS values."""
+    identity = [1, resource.key, resource.filename, resource.resource.checksum, resource.size,
+                planned.local_date.isoformat(), planned.location,
+                "" if resource.resource.checksum else epoch]
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
 
 def _fallback_backfill(items: list[tuple[PlannedAsset, Path]], report: MetadataReport) -> None:

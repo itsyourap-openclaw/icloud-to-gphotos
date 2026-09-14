@@ -82,6 +82,16 @@ CREATE TABLE IF NOT EXISTS live_photo_pairs (
     confirmed INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS resource_metadata (
+    asset_id TEXT NOT NULL,
+    resource_key TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (asset_id, resource_key),
+    FOREIGN KEY (asset_id, resource_key) REFERENCES resources(asset_id, resource_key)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     run_id      TEXT PRIMARY KEY,
     started_at  TEXT NOT NULL,
@@ -480,6 +490,38 @@ class Ledger:
         return any(row.is_exhausted for row in self.get_resources(asset_id))
 
     # --- Reporting ----------------------------------------------------------
+
+    def prepare_metadata(self, asset_id: str, key: str, signature: str) -> None:
+        """Require new verification for legacy evidence or changed metadata inputs."""
+        previous = self._conn.execute(
+            "SELECT signature FROM resource_metadata WHERE asset_id=? AND resource_key=?",
+            (asset_id, key),
+        ).fetchone()
+        if previous is not None and previous["signature"] == signature:
+            return
+        row = self.get_resource(asset_id, key)
+        if row is not None and (row.is_uploaded or (previous is not None and row.checksum)):
+            self._conn.execute(_RESET_RESOURCE_STATE + " WHERE asset_id=? AND resource_key=?",
+                               (_utcnow(), asset_id, key))
+            self._conn.execute("DELETE FROM live_photo_pairs WHERE asset_id=?", (asset_id,))
+        self._conn.execute("INSERT OR REPLACE INTO resource_metadata VALUES (?, ?, ?, 0)",
+                           (asset_id, key, signature))
+
+    def mark_metadata_verified(
+        self, asset_id: str, key: str, signature: str, verified: bool
+    ) -> None:
+        """Persist a read-back result, not an ExifTool process exit code."""
+        self._conn.execute(
+            "UPDATE resource_metadata SET confirmed=? WHERE asset_id=? "
+            "AND resource_key=? AND signature=?", (int(verified), asset_id, key, signature)
+        )
+
+    def metadata_verified(self, asset_id: str, key: str, signature: str) -> bool:
+        """Require metadata proof for the exact planned rendition and policy."""
+        return self._conn.execute(
+            "SELECT 1 FROM resource_metadata WHERE asset_id=? AND resource_key=? "
+            "AND signature=? AND confirmed=1", (asset_id, key, signature)
+        ).fetchone() is not None
 
     def start_run(self, run_id: str) -> None:
         """Open a run record."""

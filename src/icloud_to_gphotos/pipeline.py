@@ -40,7 +40,7 @@ from .downloader import download_batch, resource_path
 from .icloud_client import ICloudSession
 from .ledger import Ledger
 from .locking import MigrationBusy, migration_lock
-from .metadata import MetadataReport, backfill_batch, find_exiftool
+from .metadata import MetadataReport, backfill_batch, find_exiftool, preservation_signature
 from .scan import ChangeScanner
 from .uploader import FileVerdict, UploadError, UploadReport, upload_directory, verify_compatible
 
@@ -463,6 +463,10 @@ class Pipeline:
                     size=res.size,
                     checksum=res.resource.checksum,
                 )
+            if self.settings.backfill_metadata:
+                for res in planned.resources:
+                    self.ledger.prepare_metadata(planned.asset_id, res.key,
+                        preservation_signature(planned, res, self._repair_epoch))
             if self.settings.update_existing_photos_to_live and planned.is_live_photo:
                 self.ledger.prepare_live_photo_pair(planned.asset_id, self._pair_signature(planned))
 
@@ -551,6 +555,24 @@ class Pipeline:
         )
         result.metadata.append(report.as_dict())
         result.errors.extend(report.errors[:10])
+        if self.settings.backfill_metadata:
+            verified = set(report.verified_files)
+            with self.ledger.transaction():
+                for planned in batch.to_download:
+                    for res in planned.resources:
+                        path = resource_path(self._staging, res)
+                        if not path.is_file():
+                            continue
+                        ok = str(path) in verified
+                        self.ledger.mark_metadata_verified(planned.asset_id, res.key,
+                            preservation_signature(planned, res, self._repair_epoch), ok)
+                        if not ok:
+                            message = f"{res.filename}: metadata preservation not verified"
+                            self.ledger.mark_failed(planned.asset_id, res.key, message)
+                            result.errors.append(message)
+                            result.totals.failed += 1
+                            # Do not upload bytes that lack the requested preservation.
+                            path.unlink()
 
     def _upload(self, result: RunResult) -> None:
         if self.dry_run:
@@ -720,6 +742,11 @@ class Pipeline:
         return (
             (self._album_sync is None or not self._album_sync.pending(planned))
             and not planned.preservation_errors
+            and (not self.settings.backfill_metadata or all(
+                self.ledger.metadata_verified(planned.asset_id, res.key,
+                    preservation_signature(planned, res, self._repair_epoch))
+                for res in planned.resources
+            ))
             and planned.preservation_age_days(datetime.fromisoformat(recorded.first_seen_at), now)
             >= self.settings.delete_grace_days
         )

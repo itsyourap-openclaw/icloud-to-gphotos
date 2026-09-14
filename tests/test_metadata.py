@@ -169,12 +169,15 @@ class _FakeExiftool:
         self.probe_result = probe_result if probe_result is not None else []
         self.returncode = returncode
         self.calls: list[list[str]] = []
+        self.after_write: list[dict] | None = None
 
     def __call__(self, binary: Path, args: list[str], *, timeout: int = 900):  # noqa: ARG002
         self.calls.append(args)
         import subprocess
 
-        stdout = json.dumps(self.probe_result) if "-j" in args else ""
+        observed = (self.after_write if self.write_calls and self.after_write is not None
+                    else self.probe_result)
+        stdout = json.dumps(observed) if "-j" in args else ""
         return subprocess.CompletedProcess(
             args=["exiftool"], returncode=self.returncode, stdout=stdout, stderr=""
         )
@@ -204,6 +207,8 @@ def test_backfill_writes_date_when_missing(
     media.write_bytes(b"fake")
     planned = _planned(settings, asset_date=CAPTURED.astimezone(UTC))
     stub = fake_exiftool([{"SourceFile": str(media)}])  # no tags present
+    stub.after_write = [{"SourceFile": str(media),
+                         "EXIF:ExifIFD:DateTimeOriginal": "2024:07:09 18:20:27"}]
 
     report = backfill_batch([(planned, media)], exiftool=Path("exiftool"))
 
@@ -239,6 +244,9 @@ def test_backfill_writes_gps_only_when_icloud_has_a_fix(
         [{"SourceFile": str(media), "EXIF:ExifIFD:DateTimeOriginal": "2019:01:01 09:00:00"}]
     )
 
+    stub.after_write = [{"SourceFile": str(media),
+                         "EXIF:ExifIFD:DateTimeOriginal": "2019:01:01 09:00:00",
+                         "GPSLatitude": 12.9716, "GPSLongitude": 77.5946}]
     report = backfill_batch([(planned, media)], exiftool=Path("exiftool"))
 
     assert report.gps_written == 1

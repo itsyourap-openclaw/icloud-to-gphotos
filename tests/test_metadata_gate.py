@@ -83,3 +83,29 @@ def test_failed_probe_does_not_overwrite_tags(settings, tmp_path, monkeypatch):
     report = metadata.backfill_batch([(planned, path)], exiftool=Path('fake-exiftool'))
     assert report.errors and not report.verified_files
     assert not any('-overwrite_original' in args for args in calls)
+
+
+def test_checksumless_metadata_failure_does_not_reset_retry_budget(make_pipeline, monkeypatch):
+    from icloud_to_gphotos.ledger import MAX_UPLOAD_ATTEMPTS
+
+    asset = FakePhotoAsset('no-checksum')
+    asset.resources['original'].checksum = None
+    pipe, _, _, ledger = make_pipeline([asset])
+    pipe.settings.backfill_metadata = True
+    monkeypatch.setattr(pipeline, 'backfill_batch', lambda *a, **kw: MetadataReport(
+        errors=['missing metadata']))
+    for index in range(MAX_UPLOAD_ATTEMPTS + 1):
+        pipe.run(str(index))
+    row = ledger.get_resource(asset.id, 'original')
+    assert row.is_exhausted and row.attempts == MAX_UPLOAD_ATTEMPTS
+    assert asset.delete_calls == 0
+
+
+def test_missing_exiftool_retains_heic_source(make_pipeline):
+    asset = FakePhotoAsset('no-exiftool')
+    pipe, _, _, _ = make_pipeline([asset])
+    pipe.settings.backfill_metadata = True
+    assert pipe.exiftool is None
+    result = pipe.run('no-tool')
+    assert result.status == 'partial'
+    assert result.totals.purged_assets == 0
