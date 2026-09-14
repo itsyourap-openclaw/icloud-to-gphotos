@@ -16,16 +16,22 @@ from pyicloud.services.photos_cloudkit.service import PhotoAlbumFolder, SmartPho
 
 from .assets import PlannedAsset
 from .config import Settings
+from .destination import DestinationGuard
 from .downloader import resource_path
 from .ledger import Ledger
 from .uploader import UploadError, upload_directory
 
 
-def album_state_path(settings: Settings, library: Any) -> Path:
+def album_state_path(
+    settings: Settings, library: Any, destination: str | None = None
+) -> Path:
     scope = hashlib.sha256(json.dumps([
         settings.icloud_username.strip().casefold(), library.zone_id,
     ], sort_keys=True).encode()).hexdigest()
-    return settings.state_dir / 'albums' / f'{scope}.db'
+    directory = settings.state_dir / 'albums'
+    if destination is not None:
+        directory /= destination
+    return directory / f'{scope}.db'
 
 
 def verify_album_support(binary: Path) -> None:
@@ -101,8 +107,10 @@ class AlbumStore:
 class AlbumSync:
     """One run's complete membership snapshot and verified destination mappings."""
 
-    def __init__(self, settings: Settings, library: Any, ledger: Ledger, binary: Path) -> None:
+    def __init__(self, settings: Settings, library: Any, ledger: Ledger, binary: Path,
+                 *, guard: DestinationGuard | None = None) -> None:
         verify_album_support(binary)
+        self.guard = guard
         self.settings, self.ledger, self.binary = settings, ledger, binary
         self.memberships: dict[str, list[str]] = {}
         self.names: dict[str, str] = {}
@@ -113,7 +121,7 @@ class AlbumSync:
             self.names[str(album.id)] = str(album.fullname)
             for asset in album.photos:
                 self.memberships.setdefault(str(asset.id), []).append(str(album.id))
-        self.store = AlbumStore(album_state_path(settings, library))
+        self.store = AlbumStore(album_state_path(settings, library, ledger.destination_identity()))
 
     def _signature(self, planned: PlannedAsset, album_id: str) -> str:
         rows = {r.resource_key: r for r in self.ledger.get_resources(planned.asset_id)}
@@ -150,11 +158,15 @@ class AlbumSync:
                     linked = directory / path.name
                     os.link(path, linked)
                     by_path[str(linked.resolve())] = key
+                if self.guard is not None:
+                    self.guard.check()
                 target = self.store.target(album_id, self.names[album_id])
                 report = upload_directory(
                     directory, binary=self.binary, threads=self.settings.upload_threads,
                     pair_live_photos=False, config_path=self.settings.gotohp_config, album=target,
                 )
+                if self.guard is not None:
+                    self.guard.check()
                 summary = report.album or {}
                 keys = summary.get('albumKeys')
                 if isinstance(keys, list) and len(keys) == 1 and isinstance(keys[0], str):

@@ -33,12 +33,13 @@ from pathlib import Path
 from typing import Any
 
 from . import albums as album_integration
+from . import destination as destination_integration
 from .assets import PlannedAsset, plan_asset, sanitize_stem
 from .binaries import find_gotohp
 from .config import Settings
 from .downloader import download_batch, resource_path
 from .icloud_client import ICloudSession
-from .ledger import Ledger
+from .ledger import DestinationMismatch, Ledger
 from .locking import MigrationBusy, migration_lock
 from .metadata import MetadataReport, backfill_batch, find_exiftool
 from .scan import ChangeScanner
@@ -188,6 +189,8 @@ class Pipeline:
 
     def _execute(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, dry_run=self.dry_run)
+        self._destination: destination_integration.DestinationGuard | None = None
+        self._destination_reconcile = False
         self._repair_epoch = result.started_at.isoformat()
         self._pending_asset: Any = None
         self._album_sync = None
@@ -211,7 +214,11 @@ class Pipeline:
                     verify_compatible(self.gotohp, update_existing_photos_to_live=True)
                 else:
                     verify_compatible(self.gotohp)
-            except UploadError as exc:
+                self._destination = destination_integration.DestinationGuard(
+                    self.gotohp, self.settings.gotohp_config)
+                self._destination_reconcile = self.ledger.bind_destination(
+                    self._destination.identity)
+            except (UploadError, DestinationMismatch) as exc:
                 result.status = "error"
                 result.errors.append(str(exc))
                 LOGGER.error("%s", exc)
@@ -320,10 +327,14 @@ class Pipeline:
         )
         if self.settings.incremental_scan and not self.dry_run and not filtered:
             self._scanner = ChangeScanner(self.settings, self.session, self.ledger)
+            if self._destination_reconcile:
+                self._scanner.require_full_scan()
             yield from self._scanner.assets()
         else:
             # Filtered traversals must use the session's selectors, never all.get().
             yield from self.session.iter_all_assets()
+        if self._destination_reconcile and not filtered:
+            self.ledger.finish_destination_reconciliation()
 
     def _settle_scan(self, batch: _Batch, result: RunResult) -> None:
         if self._scanner is None:
@@ -564,7 +575,9 @@ class Pipeline:
             (self._staging["media"], self.settings.pair_live_photos),
             (self._staging["edited"], False),
         )
+        assert self._destination is not None
         for directory, pair in passes:
+            self._destination.check()
             try:
                 report = upload_directory(
                     directory,
@@ -581,6 +594,7 @@ class Pipeline:
                 LOGGER.error("Upload pass for %s failed: %s", directory.name, exc)
                 result.errors.append(f"upload({directory.name}): {exc}")
                 continue
+            self._destination.check()
             combined.merge(report)
 
         result.uploads.append(combined.as_dict())
@@ -670,7 +684,8 @@ class Pipeline:
         if self.settings.preserve_albums and not self.dry_run and self._album_sync is None:
             assert self.gotohp is not None
             self._album_sync = album_integration.AlbumSync(
-                self.settings, self.session.library, self.ledger, self.gotohp
+                self.settings, self.session.library, self.ledger, self.gotohp,
+                guard=self._destination,
             )
         return self._album_sync
 
@@ -741,6 +756,8 @@ class Pipeline:
             )
             return
 
+        assert self._destination is not None
+        self._destination.check()
         for planned in batch.ready_to_purge:
             if not self._purge_allowed(planned, datetime.now(UTC)):
                 continue

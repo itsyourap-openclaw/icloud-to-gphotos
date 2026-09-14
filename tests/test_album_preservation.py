@@ -62,7 +62,8 @@ def test_explicit_mapping_recovers_unknown_creation(make_pipeline, monkeypatch):
     pipe, session, _, _ = make_pipeline([asset])
     configure(pipe, session, [asset], monkeypatch, fail=True)
     pipe.run('lost')
-    with AlbumStore(album_state_path(pipe.settings, session.library)) as store:
+    path = album_state_path(pipe.settings, session.library, pipe.ledger.destination_identity())
+    with AlbumStore(path) as store:
         store.bind('source-album', 'AF1Qip-destination-album')
     calls = configure(pipe, session, [asset], monkeypatch)
     assert pipe.run('recovered').totals.purged_assets == 1
@@ -134,6 +135,9 @@ def test_bind_command_validates_source_and_persists_mapping(settings, monkeypatc
         zone_id={'zoneName': 'PrimarySync'}, albums=[SimpleNamespace(id='source')]))
     monkeypatch.setattr(cli, '_settings', lambda: settings)
     monkeypatch.setattr(cli, 'connect', lambda _: session)
+    from pathlib import Path
+    monkeypatch.setattr(cli, 'find_gotohp', lambda _: Path('fake-gotohp'))
+    monkeypatch.setattr(cli, 'DestinationGuard', lambda *a: SimpleNamespace(identity='test-scope'))
     runner = CliRunner()
     result = runner.invoke(cli.app, ['bind-album', 'missing', 'AF1Qip-destination'])
     assert result.exit_code != 0
